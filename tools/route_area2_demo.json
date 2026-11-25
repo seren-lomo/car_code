@@ -1,0 +1,7 @@
+{
+  "route_id": 2,
+  "initial_pose": {"x_mm": 2000, "y_mm": 0, "yaw_deg": 180},
+  "points": [
+    {"x_mm": 1500, "y_mm": 0, "yaw_deg": 180, "move_rpm": 30, "turn_rpm": 20, "work_id": 1}
+  ]
+}
