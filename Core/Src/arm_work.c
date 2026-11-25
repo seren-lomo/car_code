@@ -17,6 +17,7 @@
 #define CMD_TEST_BEGIN 6U
 #define CMD_TRAY_PLACE 7U
 #define CMD_TRAY_RELOAD_PICK 8U
+#define CMD_GRIP_ABORT 9U
 
 #if ARM_TRAY_ENABLED
 #define TRAY_CAPACITY 3U
@@ -233,14 +234,16 @@ static uint8_t full_pose_plan(const int32_t *pose,uint32_t after,uint8_t move_fi
     targets[0]=ARM_CLEAR_Z_CDEG;targets[1]=ARM_CLEAR_REACH_CDEG;
     targets[2]=pose[ARM_YAW];targets[3]=pose[ARM_REACH];targets[4]=pose[ARM_Z];
     for(i=0;i<count;i++) if(!axis_target_ok(axes[i],targets[i])) return 0U;
-    /* Material alignment can reuse clearance left by a previous tray operation.
-     * It must never retract to clearance on its own while the camera is aligning.
-     */
+    /* Material alignment normally reuses clearance left by a tray operation.
+     * An explicit return to the photo origin after an empty grip may use clearance. */
     if(after==ARM_WORK_ALIGNED) {
         if(ArmCAN_PositionWithinTolerance(ARM_REACH,ARM_CLEAR_REACH_CDEG)) {
             for(i=1U;i+1U<count;i++) {axes[i]=axes[i+1U];targets[i]=targets[i+1U];}
             count--;
-        } else if(material_work()) return 0U;
+        } else if(material_work() &&
+                  (arm_work_status.state!=ARM_WORK_WAIT_VISION ||
+                   arm_work_status.opcode!=CMD_GRIP_ABORT ||
+                   pose[ARM_Z] || pose[ARM_YAW] || pose[ARM_REACH])) return 0U;
     }
     for(i=0;i<3U;i++) arm_work_status.target_cdeg[i]=pose[i];
     plan(count,axes,targets,after); return 1U;
@@ -267,14 +270,14 @@ static uint8_t direct_align_yaw_ok(int32_t target,uint8_t yaw_mode)
         distance_cdeg(yaw,0)>ARM_MATERIAL_ALIGN_YAW_LIMIT_CDEG ||
         distance_cdeg(target,0)>ARM_MATERIAL_ALIGN_YAW_LIMIT_CDEG ||
         !ArmCAN_PositionWithinTolerance(ARM_Z,ARM_CLEAR_Z_CDEG))) return 0U;
-    /* A small turn can start at the front edge of the normal yaw clearance,
-     * including the encoder quantization permitted on arrival there.
-     */
+    /* Use the visual reach move's arrival tolerance at both direct yaw boundaries. */
     return pose_ok(ARM_YAW,target) &&
         arm_motor_status[ARM_Z].position_cdeg>=ARM_ALIGN_MICRO_MIN_Z_CDEG &&
         (reach>=ARM_ALIGN_MICRO_MIN_REACH_CDEG ||
-         ArmCAN_PositionWithinTolerance(ARM_REACH,ARM_ALIGN_MICRO_MIN_REACH_CDEG)) &&
-        (reach<=reach_max || ArmCAN_PositionWithinTolerance(ARM_REACH,reach_max));
+         ArmCAN_PositionWithinCustomTolerance(ARM_REACH,ARM_ALIGN_MICRO_MIN_REACH_CDEG,
+                                             ARM_ALIGN_REACH_TOLERANCE_CDEG)) &&
+        (reach<=reach_max || ArmCAN_PositionWithinCustomTolerance(ARM_REACH,reach_max,
+                                                                 ARM_ALIGN_REACH_TOLERANCE_CDEG));
 }
 static uint8_t align_plan(const int32_t *pose)
 {
@@ -521,12 +524,13 @@ RouteResult_t Route_OnAuxCommand(uint8_t type,const uint8_t *p,uint16_t length)
     id=u32(p);index=u16(p+4);work=u16(p+6);command=u32(p+8);opcode=p[12];reference=u32(p+28);
     if(!command || u16(p+14)) return ROUTE_BAD_VALUE;
     for(i=0;i<3U;i++)pose[i]=(int32_t)u32(p+16+4U*i);
-    if(opcode<CMD_ZERO || opcode>CMD_TRAY_RELOAD_PICK) return ROUTE_BAD_VALUE;
+    if(opcode<CMD_ZERO || opcode>CMD_GRIP_ABORT) return ROUTE_BAD_VALUE;
     if(opcode==CMD_TRAY_PLACE || opcode==CMD_TRAY_RELOAD_PICK) {
         if(p[13]<1U || p[13]>3U) return ROUTE_BAD_VALUE;
         if(opcode==CMD_TRAY_RELOAD_PICK && (pose[ARM_YAW] || pose[ARM_REACH])) return ROUTE_BAD_VALUE;
     } else if(p[13] || (opcode!=CMD_ALIGN && (pose[0] || pose[1] || pose[2]))) return ROUTE_BAD_VALUE;
-    if(opcode!=CMD_PICK && opcode!=CMD_GRIP_DONE && opcode!=CMD_TRAY_RELOAD_PICK && reference) return ROUTE_BAD_VALUE;
+    if(opcode!=CMD_PICK && opcode!=CMD_GRIP_DONE &&
+       opcode!=CMD_TRAY_RELOAD_PICK && opcode!=CMD_GRIP_ABORT && reference) return ROUTE_BAD_VALUE;
     if(opcode==CMD_TEST_BEGIN) {
         /* New opcode is deliberately unavailable in the complete-vehicle build.
          * route_id is a monotonic nonzero test session, index=0, command=1. */
@@ -642,11 +646,18 @@ RouteResult_t Route_OnAuxCommand(uint8_t type,const uint8_t *p,uint16_t length)
         aligned_z = lift_z;
         {uint8_t axis=ARM_Z;int32_t target=(int32_t)lower;plan(1U,&axis,&target,ARM_WORK_WAIT_GRIP);}
         remember(p);arm_work_status.target_cdeg[ARM_Z]=(int32_t)lower;state(ARM_WORK_LOWERING);
-    } else if(opcode==CMD_GRIP_DONE) {
-        /* GRIP_DONE requests the lift using the same aligned command ID. */
+    } else if(opcode==CMD_GRIP_DONE || opcode==CMD_GRIP_ABORT) {
+        uint8_t axis=ARM_Z;
+        uint32_t after=ARM_WORK_PICKED;
         if(arm_work_status.state!=ARM_WORK_WAIT_GRIP || !reference ||
            reference!=arm_work_status.aligned_command_id)return ROUTE_BAD_STATE;
-        {uint8_t axis=ARM_Z;plan(1U,&axis,&aligned_z,ARM_WORK_PICKED);}
+        if(opcode==CMD_GRIP_ABORT) {
+            claw_open();
+            arm_work_status.aligned_command_id=0U;
+            /* At photo height, wait for vision to send the return-to-origin ALIGN. */
+            after=ARM_WORK_WAIT_VISION;
+        }
+        plan(1U,&axis,&aligned_z,after);
         remember(p);arm_work_status.target_cdeg[ARM_Z]=aligned_z;state(ARM_WORK_LIFTING);
     } else {
         if(arm_work_status.state!=ARM_WORK_WAIT_VISION && arm_work_status.state!=ARM_WORK_ALIGNED &&
@@ -758,7 +769,7 @@ void ArmWork_Task(void)
 #if ARM_TRAY_ENABLED
         claw_holding &&
 #else
-        material_work() &&
+        material_work() && plan_done_state==ARM_WORK_PICKED &&
 #endif
         (uint32_t)(HAL_GetTick() - claw_closed_at) < ARM_CLAW_CLOSE_MS) return;
     axis=plan_axis[plan_index];arm_work_status.active_axis=axis;

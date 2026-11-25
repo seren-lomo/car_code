@@ -357,6 +357,72 @@ static RouteResult_t claw_command(uint16_t work,uint32_t id,uint8_t op,uint32_t 
 #endif
 }
 
+static int grip_abort_case(uint32_t test)
+{
+    const uint16_t work=ROUTE_WORK_MATERIAL_1;
+    const int32_t pickup_reach=test==110 ? -9000 : -25000;
+    uint32_t id=2U,z_before,yaw_before,reach_before;
+    int32_t photo_z;
+#if ARM_TRAY_ENABLED
+    uint32_t pwm_before;
+#endif
+
+    CHECK(home(),1100);
+#if ARM_VISION_TEST_MODE
+    CHECK(test_command(1,work,1,6,0,0,0,0)==ROUTE_OK,1101);
+#else
+    CHECK(station(work),1101);
+#endif
+#if ARM_TRAY_ENABLED
+    CHECK(claw_command(work,id,2,0)==ROUTE_OK && until(ARM_WORK_ALIGNED),1102);
+    CHECK(claw_command(work,id+1U,3,id)==ROUTE_OK && until(ARM_WORK_WAIT_GRIP),1103);
+    CHECK(claw_command(work,id+2U,4,id)==ROUTE_OK && until(ARM_WORK_PICKED),1104);
+    CHECK(report_bytes[30]==1U,1105);
+    pwm_before=tray_pwm_writes;
+    id+=3U;
+#endif
+    CHECK(micro_command(id,-900,1200,pickup_reach)==ROUTE_OK && until(ARM_WORK_ALIGNED),1106);
+    photo_z=arm_motor_status[ARM_Z].position_cdeg;
+    CHECK(claw_command(work,id+2U,9,id)==ROUTE_BAD_STATE,1107);
+    CHECK(claw_command(work,id+1U,3,id)==ROUTE_OK && until(ARM_WORK_WAIT_GRIP),1108);
+    CHECK(claw_command(work,id+2U,9,id+1U)==ROUTE_BAD_STATE,1109);
+    put32(packet+28,id);
+    packet[13]=1U;
+    CHECK(Route_OnAuxCommand(0x31,packet,32)==ROUTE_BAD_VALUE,1110);
+    packet[13]=0U;
+    put32(packet+16,1U);
+    CHECK(Route_OnAuxCommand(0x31,packet,32)==ROUTE_BAD_VALUE,1111);
+    CHECK(pwm_compare==ARM_CLAW_CLOSED_COMPARE,1112);
+    z_before=axis_moves[ARM_Z];yaw_before=axis_moves[ARM_YAW];reach_before=axis_moves[ARM_REACH];
+    CHECK(claw_command(work,id+2U,9,id)==ROUTE_OK && pwm_compare==ARM_CLAW_OPEN_COMPARE,1113);
+    CHECK(arm_work_status.state==ARM_WORK_LIFTING && !arm_work_status.aligned_command_id &&
+          arm_work_status.target_cdeg[ARM_Z]==photo_z,1114);
+    CHECK(claw_command(work,id+2U,9,id)==ROUTE_OK,1115);
+    step(1);
+    CHECK(ArmCAN_Busy() && arm_work_status.active_axis==ARM_Z,1116);
+    CHECK(until(ARM_WORK_WAIT_VISION) && ArmCAN_PositionWithinTolerance(ARM_Z,photo_z),1117);
+    CHECK(claw_command(work,id+2U,9,id)==ROUTE_OK,1118);
+    step(600);
+    CHECK(arm_work_status.state==ARM_WORK_WAIT_VISION && pwm_compare==ARM_CLAW_OPEN_COMPARE &&
+          axis_moves[ARM_Z]==z_before+1U && axis_moves[ARM_YAW]==yaw_before &&
+          axis_moves[ARM_REACH]==reach_before,1119);
+#if ARM_TRAY_ENABLED
+    CHECK(tray_pwm_writes==pwm_before && report_bytes[30]==1U && !(report_bytes[28]&32U),1120);
+#endif
+    CHECK(claw_command(work,id+3U,4,id)==ROUTE_BAD_STATE,1121);
+    if(test==111) CHECK(micro_command(id+3U,0,200,-2000)==ROUTE_BAD_VALUE,1122);
+    CHECK(micro_command(id+3U,0,0,0)==ROUTE_OK && until(ARM_WORK_ALIGNED),1123);
+    CHECK(ArmCAN_PositionWithinTolerance(ARM_Z,0) && ArmCAN_PositionWithinTolerance(ARM_YAW,0) &&
+          ArmCAN_PositionWithinTolerance(ARM_REACH,0),1124);
+    CHECK(micro_command(id+4U,-900,1200,pickup_reach)==ROUTE_OK && until(ARM_WORK_ALIGNED),1125);
+    CHECK(claw_command(work,id+5U,3,id+4U)==ROUTE_OK && until(ARM_WORK_WAIT_GRIP),1126);
+    CHECK(claw_command(work,id+6U,4,id+4U)==ROUTE_OK && until(ARM_WORK_PICKED),1127);
+#if ARM_TRAY_ENABLED
+    CHECK(report_bytes[30]==2U && tray_pwm_writes==pwm_before+1U,1128);
+#endif
+    return 0;
+}
+
 static int claw_case(uint32_t test)
 {
     const uint16_t work = (test==86) ? ROUTE_WORK_PROCESSING_1 :
@@ -549,6 +615,29 @@ static int micro_case(uint32_t test)
         CHECK(micro_command(9,0,ARM_MATERIAL_ALIGN_YAW_LIMIT_CDEG+1,-10000)==ROUTE_BAD_VALUE,985);
         step(250);
         CHECK(move_count==before+2 && arm_work_status.aligned_command_id==8U,986);
+    } else if(test==108 || test==109) {
+        const int32_t edge=test==108 ? ARM_REACH_MAX_CDEG : ARM_ALIGN_MICRO_MIN_REACH_CDEG;
+        const int32_t edge_counts=(int32_t)((int64_t)edge*65536/36000);
+        const int32_t direction=test==108 ? 1 : -1;
+        /* 51, 70, 90 and 95 cdeg, followed by one count outside the window. */
+        const int32_t offsets[]={93,128,164,174,175};
+        uint32_t i;
+        CHECK(micro_command(2,0,0,edge)==ROUTE_OK && until(ARM_WORK_ALIGNED),1080);
+        for(i=0U;i<5U;i++) {
+            const int32_t feedback_counts=edge_counts+direction*offsets[i];
+            const int32_t yaw_target=i%2U ? 0 : 200;
+            pos[ARM_REACH]=target[ARM_REACH]=arm_motor_status[ARM_REACH].origin_counts+feedback_counts;
+            arm_motor_status[ARM_REACH].position_counts=pos[ARM_REACH];
+            arm_motor_status[ARM_REACH].position_cdeg=(int32_t)((int64_t)feedback_counts*36000/65536);
+            if(i==4U) {
+                CHECK(micro_command(3U+i,0,yaw_target,edge)==ROUTE_BAD_VALUE,1081);
+            } else {
+                CHECK(micro_command(3U+i,0,yaw_target,edge)==ROUTE_OK,1082);
+                CHECK(until(ARM_WORK_ALIGNED) &&
+                      arm_work_status.aligned_command_id==3U+i,1083);
+            }
+        }
+        CHECK(axis_moves[ARM_YAW]==yaw_before+4U,1084);
     }
     CHECK(arm_work_status.fault==ARM_WORK_NO_FAULT,799);return 0;
 }
@@ -661,7 +750,6 @@ static int tray_case(uint32_t test)
         CHECK(tray_pwm_writes==(i==0 ? 2U : 3U) && tray_pwm_starts==1U,1012);
         CHECK(claw_command(ROUTE_WORK_MATERIAL_1,id+2,4,id)==ROUTE_OK && report_bytes[30]==i+1,1013);
         if((test==106 || test==107) && i==0U) {
-            uint16_t report_flags;
             /* Second material after one tray load. Simulate 0.80/1.20 degrees of residual. */
             align_reach_feedback_counts=test==106 ? -12652 : -12576;
             flags=3U; /* Enabled and drive-reported target reached. */
@@ -672,13 +760,18 @@ static int tray_case(uint32_t test)
                 CHECK(arm_motor_status[ARM_REACH].position_cdeg==-6949 &&
                       !ArmCAN_PositionWithinTolerance(ARM_REACH,-7029),1063);
             } else {
+                const volatile ArmCANDiag_t *diag=&arm_can_diag[ARM_REACH];
+                uint16_t report_flags,expected_flags;
                 CHECK(until(ARM_WORK_FAULT) && arm_work_status.fault==ARM_WORK_MOTOR &&
                       arm_work_status.active_axis==ARM_REACH,1070);
-                CHECK(arm_can_diag[ARM_REACH].fault_code==ARM_MOTOR_TIMEOUT &&
-                      arm_can_diag[ARM_REACH].fault_stage==6 && !arm_can_diag[ARM_REACH].timeout_waiting &&
-                      arm_can_diag[ARM_REACH].fault_speed_rpm==0,1071);
+                /* The motion deadline can expire between polls or just after a reply. */
+                CHECK(diag->fault_code==ARM_MOTOR_TIMEOUT && diag->fault_stage>=6U &&
+                      diag->fault_stage<=9U && !diag->timeout_waiting && !diag->timeout_tx_active &&
+                      diag->fault_speed_rpm==0,1071);
                 report_flags=(uint16_t)(report_bytes[28]|((uint16_t)report_bytes[29]<<8));
-                CHECK(report_flags==(ARM_VISION_TEST_MODE ? 0x2D1CU : 0x2D14U),1072);
+                expected_flags=(uint16_t)((ARM_VISION_TEST_MODE ? 0x211CU : 0x2114U) |
+                                         ((uint16_t)diag->fault_stage<<9));
+                CHECK(report_flags==expected_flags,1072);
             }
             CHECK(report_bytes[30]==1U,1064);
             return 0;
@@ -732,7 +825,8 @@ int run_case(uint32_t test)
     uint8_t i;uint32_t before;
     CHECK(ArmWork_Init()==HAL_OK,1);RouteKeys_Init();
     for(i=0;i<3;i++){pos[i]=1000*(i+1);target[i]=pos[i];}
-    if(test>=103 && test<=105) return micro_case(test);
+    if(test==110 || test==111) return grip_abort_case(test);
+    if((test>=103 && test<=105) || test==108 || test==109) return micro_case(test);
     if(test==99) {
         uint16_t report_flags;
         uint32_t zero_started;

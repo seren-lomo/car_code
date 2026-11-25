@@ -22,9 +22,9 @@
  * No stepper motion occurs at boot; explicitly record the manually set pose.
  */
 #define ARM_PULSES_PER_REV       3200U /* 200 steps * MStep 16 */
-#define ARM_Z_RPM                40U
-#define ARM_YAW_RPM              25U
-#define ARM_REACH_RPM            30U
+#define ARM_Z_RPM                90U
+#define ARM_YAW_RPM              40U
+#define ARM_REACH_RPM            50U
 #define ARM_ACCELERATION         100U
 #define ARM_TOLERANCE_CDEG       50U
 #define ARM_Z_MIN_CDEG          (-130500L) /* 145 mm * 900 cdeg/mm */
@@ -53,7 +53,7 @@
  * Before a yaw adjustment: Z clearance -> reach clearance -> yaw -> reach -> Z.
  */
 #define ARM_CLEAR_Z_CDEG         0L
-#define ARM_CLEAR_REACH_CDEG    (-19098L) /* 60 mm * 36000 / 113.1, rounded */
+#define ARM_CLEAR_REACH_CDEG    (-19098L) /* 60 mm * 36000 / 113.1, rounded *///转yaw前退的距离
 #define ARM_YAW_MIN_Z_CDEG      (-94500L) /* maximum 105 mm down while yaw rotates */
 /* A visual yaw correction up to 1 output degree (300 motor cdeg at 3:1)
  * can turn at the current reach when it starts in the front 60 mm and Z
@@ -76,8 +76,8 @@
 #define ARM_TRAY_THIRD_COMPARE   250U
 #define ARM_TRAY_SETTLE_MS       1000U /* allow the full two-index sweep */
 #define ARM_CLAW_RELEASE_MS      500U
-#define ARM_TRAY_REACH_CDEG      (-35013L) /* 110 mm back at 113.1 mm per turn */
-#define ARM_TRAY_YAW_CDEG        44100L    /* +120 degrees at the arm, 3:1 reduction  1度300*/
+#define ARM_TRAY_REACH_CDEG      (-33421L) /* 110 mm back at 113.1 mm per turn *///转yaw后退的距离
+#define ARM_TRAY_YAW_CDEG        43500L    /* +120 degrees at the arm, 3:1 reduction  1度300  44100*/
 #define ARM_TRAY_PLACE_Z_CDEG    0L        /* release at the upper origin */
 #define ARM_TRAY_PICK_Z_CDEG     0L        /* grip at the upper origin */
 #if ARM_TRAY_ENABLED

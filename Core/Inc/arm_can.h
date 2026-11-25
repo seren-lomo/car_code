@@ -64,6 +64,7 @@ uint8_t ArmCAN_Move(uint8_t axis, int32_t motor_cdeg);
 uint8_t ArmCAN_MoveWithTolerance(uint8_t axis, int32_t motor_cdeg, uint16_t tolerance_cdeg);
 /* Check position feedback against the axis default. */
 uint8_t ArmCAN_PositionWithinTolerance(uint8_t axis, int32_t motor_cdeg);
+uint8_t ArmCAN_PositionWithinCustomTolerance(uint8_t i, int32_t target, uint16_t tolerance_cdeg);
 void ArmCAN_StopAll(void); /* hold enable; never release a loaded Z axis */
 void ArmCAN_RxFrame(uint32_t ext_id,const uint8_t *data,uint8_t dlc);
 

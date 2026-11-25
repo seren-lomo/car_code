@@ -258,6 +258,15 @@ uint8_t ArmCAN_PositionWithinTolerance(uint8_t i, int32_t target)
     return position_config_valid(&config) &&
         position_within_tolerance(i,position_target_counts(i,target),&config);
 }
+uint8_t ArmCAN_PositionWithinCustomTolerance(uint8_t i, int32_t target, uint16_t tolerance_cdeg)
+{
+    ArmMotorConfig_t config;
+    if(i>=ARM_AXIS_COUNT || !arm_motor_status[i].homed) return 0U;
+    config=arm_motor_config[i];
+    config.tolerance_cdeg=tolerance_cdeg;
+    return position_config_valid(&config) &&
+        position_within_tolerance(i,position_target_counts(i,target),&config);
+}
 uint8_t ArmCAN_MoveWithTolerance(uint8_t i, int32_t target, uint16_t tolerance_cdeg)
 {
     ArmMotorConfig_t c;
