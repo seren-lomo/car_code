@@ -46,18 +46,25 @@
 #define ARM_CLAW_CLOSE_MS        500U
 
 /* Origin is fully UP and fully FORWARD. Reach=0 is NOT retracted.
- * Yaw clearance: first lift to Z=0, then retract 60 mm.
+ * Yaw clearance: reach Z=0 and retract to 60 mm before yaw.
  * Never rotate yaw below 105 mm down from the upper origin.
  * Transport stays 60 mm retracted.
  * It is not inferred to be a mechanical end stop. Calibrate these values.
- * Before a yaw adjustment: Z clearance -> reach clearance -> yaw -> reach -> Z.
+ * Before yaw: reach the clearance pose. After yaw: approach the target pose.
  */
 #define ARM_CLEAR_Z_CDEG         0L
 #define ARM_CLEAR_REACH_CDEG    (-19098L) /* 60 mm * 36000 / 113.1, rounded *///×ªyawÇ°ÍËµÄ¾àÀë
 #define ARM_YAW_MIN_Z_CDEG      (-94500L) /* maximum 105 mm down while yaw rotates */
+/* Below this height, lift before withdrawing to avoid nearby material. */
+#ifndef ARM_PARALLEL_RETRACT_ENABLE
+#define ARM_PARALLEL_RETRACT_ENABLE 1U
+#endif
+#ifndef ARM_PARALLEL_RETRACT_MIN_Z_CDEG
+#define ARM_PARALLEL_RETRACT_MIN_Z_CDEG (-9000L) /* 10 mm below the upper origin */
+#endif
 /* A visual yaw correction up to 1 output degree (300 motor cdeg at 3:1)
  * can turn at the current reach when it starts in the front 60 mm and Z
- * is at a clear height. Reach and Z adjustments are planned independently.
+ * is at a clear height. Z and reach can move together outside the yaw step.
  */
 #define ARM_ALIGN_MICRO_YAW_STEP_CDEG   300L
 #define ARM_MATERIAL_ALIGN_YAW_STEP_CDEG  13500L /* max 45 degrees per direct turn at Z clearance */

@@ -86,6 +86,8 @@ RouteResult_t Route_RequestStartArea(uint8_t area)
 }
 
 static uint32_t yaw_clearance_violations;
+static uint32_t linear_overlap_ticks,linear_ticks_at_yaw,yaw_overlap_errors;
+static uint8_t yaw_preflight_rpm;
 static uint8_t reproduce_reach_clearance, drift_after_clearance;
 static int32_t align_reach_feedback_counts;
 static uint32_t axis_moves[3];
@@ -132,7 +134,10 @@ void can_SendCmd(volatile uint8_t *f,uint8_t n)
                 32768U/ARM_PULSES_PER_REV+1U);
             if(error<0)error=-error;
             if(z<ARM_YAW_MIN_Z_CDEG || error>tolerance)yaw_clearance_violations++;
-        }
+            if(ArmCAN_AxisBusy(ARM_Z) || ArmCAN_AxisBusy(ARM_REACH)) yaw_overlap_errors++;
+            linear_ticks_at_yaw=linear_overlap_ticks;
+            yaw_preflight_rpm=0U;
+        } else if(ArmCAN_AxisBusy(ARM_YAW)) yaw_overlap_errors++;
         pulses=((uint32_t)f[6]<<24)|((uint32_t)f[7]<<16)|((uint32_t)f[8]<<8)|f[9];
         rpm=((uint32_t)f[3]<<8)|f[4];
         motion_counts_per_tick[i]=(int32_t)((rpm*65536U+59999U)/60000U);
@@ -151,7 +156,8 @@ void can_SendCmd(volatile uint8_t *f,uint8_t n)
         r[3]=(uint8_t)(v>>24);r[4]=(uint8_t)(v>>16);r[5]=(uint8_t)(v>>8);r[6]=(uint8_t)v;
         r[7]=0x6B;response_n[i]=8;
     } else if(function==0x35) {
-        r[2]=(uint8_t)(target[i]<pos[i]);r[3]=0;r[4]=moving[i]?10:0;r[5]=0x6B;response_n[i]=6;
+        r[2]=(uint8_t)(target[i]<pos[i]);r[3]=0;r[4]=moving[i]?10:(i==ARM_YAW?yaw_preflight_rpm:0);
+        r[5]=0x6B;response_n[i]=6;
     } else if(function==0x3A)r[2]=flags;
     if(function==reject_function) {r[2]=0xE2;response_n[i]=4;}
     if(function==drop_function && (!drop_address || f[0]==drop_address))response_n[i]=0;
@@ -175,8 +181,9 @@ static void step(uint32_t ms)
                 ArmCAN_RxFrame((uint32_t)(5U+i)<<8,response[i]+1,(uint8_t)(n-1U));
             }
         }
+        if(moving[ARM_Z] && moving[ARM_REACH]) linear_overlap_ticks++;
         RouteKeys_Task();
-        if(drift_after_clearance && arm_work_status.active_axis==ARM_REACH) {
+        if(drift_after_clearance && ArmCAN_AxisBusy(ARM_REACH)) {
             ArmCAN_Task();
             if(arm_motor_status[ARM_REACH].state==ARM_MOTOR_DONE) {
                 /* Simulate fresh position feedback outside tolerance before enabling yaw. */
@@ -362,7 +369,7 @@ static int grip_abort_case(uint32_t test)
     const uint16_t work=ROUTE_WORK_MATERIAL_1;
     const int32_t pickup_reach=test==111 ? -25000 : -9000;
     const uint8_t abort_while_lowering=(uint8_t)(test==112);
-    uint32_t id=2U,z_before,yaw_before,reach_before,closes_before,stops_before;
+    uint32_t id=2U,z_before,yaw_before,reach_before,closes_before,stops_before,overlap_before;
     int32_t photo_z,lower_z;
 #if ARM_TRAY_ENABLED
     uint32_t pwm_before;
@@ -430,16 +437,69 @@ static int grip_abort_case(uint32_t test)
     CHECK(tray_pwm_writes==pwm_before && report_bytes[30]==1U && !(report_bytes[28]&32U),1120);
 #endif
     CHECK(claw_command(work,id+3U,4,id)==ROUTE_BAD_STATE,1121);
-    if(test==111) CHECK(micro_command(id+3U,0,200,-2000)==ROUTE_BAD_VALUE,1122);
+    if(test==111) {
+        CHECK(micro_command(id+3U,0,200,-2000)==ROUTE_BAD_VALUE,1122);
+        yaw_preflight_rpm=4U;
+    }
+    overlap_before=linear_overlap_ticks;
     CHECK(micro_command(id+3U,0,0,0)==ROUTE_OK && until(ARM_WORK_ALIGNED),1123);
+    if(test==111) {
+        CHECK(!yaw_overlap_errors && !yaw_preflight_rpm,1135);
+        CHECK(ARM_PARALLEL_RETRACT_ENABLE ? linear_ticks_at_yaw>overlap_before :
+                                           linear_ticks_at_yaw==overlap_before,1136);
+    }
     CHECK(ArmCAN_PositionWithinTolerance(ARM_Z,0) && ArmCAN_PositionWithinTolerance(ARM_YAW,0) &&
           ArmCAN_PositionWithinTolerance(ARM_REACH,0),1124);
     CHECK(micro_command(id+4U,-900,1200,pickup_reach)==ROUTE_OK && until(ARM_WORK_ALIGNED),1125);
     CHECK(claw_command(work,id+5U,3,id+4U)==ROUTE_OK && until(ARM_WORK_WAIT_GRIP),1126);
-    CHECK(claw_command(work,id+6U,4,id+4U)==ROUTE_OK && until(ARM_WORK_PICKED),1127);
+    CHECK(claw_command(work,id+6U,4,id+4U)==ROUTE_OK,1127);
+#if ARM_TRAY_ENABLED
+    reach_before=axis_moves[ARM_REACH];
+    CHECK(until(ARM_WORK_TRAY_LOADING) && axis_moves[ARM_REACH]==reach_before,1129);
+#endif
+    CHECK(until(ARM_WORK_PICKED),1127);
 #if ARM_TRAY_ENABLED
     CHECK(report_bytes[30]==2U && tray_pwm_writes==pwm_before+1U,1128);
 #endif
+    return 0;
+}
+
+static int parallel_work_case(uint32_t test)
+{
+    uint32_t id=2U,elapsed;
+    const int32_t yaw=test==116 ? ARM_MATERIAL_ALIGN_YAW_STEP_CDEG+800 : (test==113 ? 200 : 0);
+    CHECK(home(),1140);
+#if ARM_VISION_TEST_MODE
+    CHECK(test_command(1,ROUTE_WORK_MATERIAL_1,1,6,0,0,0,0)==ROUTE_OK,1141);
+#else
+    CHECK(station(ROUTE_WORK_MATERIAL_1),1141);
+#endif
+    if(test==116) {
+        CHECK(micro_command(id++,0,0,ARM_CLEAR_REACH_CDEG)==ROUTE_OK && until(ARM_WORK_ALIGNED),1142);
+    }
+    CHECK(micro_command(id,-80000,yaw,-12000)==ROUTE_OK,1143);
+    if(test==114) {
+        arm_motor_config[ARM_REACH].min_cdeg=-11000;
+        step(100);
+        CHECK(arm_work_status.state==ARM_WORK_FAULT && arm_work_status.fault==ARM_WORK_POSE &&
+              arm_work_status.active_axis==ARM_REACH && !move_count && !ArmCAN_Busy() && stop_count==3U,1144);
+        return 0;
+    }
+    for(elapsed=0U;elapsed<10000U && !linear_overlap_ticks;elapsed++) step(1);
+    CHECK(arm_work_status.state==ARM_WORK_ALIGNING && arm_work_status.active_axis==ARM_Z &&
+          linear_overlap_ticks && !yaw_overlap_errors,1145);
+    if(test==115) {
+        drop_address=7U;drop_function=0x36;
+        CHECK(until(ARM_WORK_FAULT),1146);
+        CHECK(arm_work_status.fault==ARM_WORK_MOTOR && arm_work_status.active_axis==ARM_REACH &&
+              arm_can_diag[ARM_REACH].fault_code==ARM_MOTOR_TIMEOUT && !moving[ARM_Z] &&
+              !moving[ARM_REACH] && arm_motor_status[ARM_Z].state==ARM_MOTOR_STOPPED &&
+              !axis_moves[ARM_YAW],1147);
+        return 0;
+    }
+    CHECK(until(ARM_WORK_ALIGNED) && arm_work_status.aligned_command_id==id &&
+          linear_ticks_at_yaw<linear_overlap_ticks && axis_moves[ARM_YAW]==1U &&
+          !yaw_overlap_errors && !stop_count,1148);
     return 0;
 }
 
@@ -846,6 +906,7 @@ int run_case(uint32_t test)
     CHECK(ArmWork_Init()==HAL_OK,1);RouteKeys_Init();
     for(i=0;i<3;i++){pos[i]=1000*(i+1);target[i]=pos[i];}
     if(test>=110 && test<=112) return grip_abort_case(test);
+    if(test>=113 && test<=116) return parallel_work_case(test);
     if((test>=103 && test<=105) || test==108 || test==109) return micro_case(test);
     if(test==99) {
         uint16_t report_flags;

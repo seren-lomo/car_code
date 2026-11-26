@@ -28,10 +28,14 @@ typedef struct {
 static Port ports[ARM_AXIS_COUNT];
 
 static int64_t magnitude(int64_t v) { return v<0 ? -v : v; }
+static uint8_t other_linear_axis(uint8_t i)
+{ return i==ARM_Z ? ARM_REACH : ARM_Z; }
 static void fail(uint8_t i, uint32_t fault)
 {
     Port *p=&ports[i];
     uint8_t probe=(uint8_t)(p->operation==3U);
+    uint8_t parallel=(uint8_t)(p->operation==2U && i!=ARM_YAW &&
+        ports[other_linear_axis(i)].operation==2U);
     arm_can_diag[i].fault_code=(uint8_t)fault;
     arm_can_diag[i].fault_stage=p->stage;
     arm_can_diag[i].fault_function=p->expected;
@@ -49,7 +53,8 @@ static void fail(uint8_t i, uint32_t fault)
     arm_motor_status[i].homed=0U;
     p->operation=p->waiting=p->reply=0U;
     /* A read-only probe must not send an enable, stop, or motion command. */
-    if(!probe) {p->stop_pending=1U; p->stop_attempts=0U;}
+    if(parallel) ArmCAN_StopAll();
+    else if(!probe) {p->stop_pending=1U; p->stop_attempts=0U;}
 }
 static void clear_rx(Port *p)
 {
@@ -211,10 +216,21 @@ uint8_t ArmCAN_Busy(void)
         if(ports[i].operation || ports[i].stop_pending || ports[i].tx_active || ports[i].waiting) return 1U;
     return 0U;
 }
+uint8_t ArmCAN_AxisBusy(uint8_t i)
+{
+    if(i>=ARM_AXIS_COUNT) return 0U;
+    return ports[i].operation || ports[i].stop_pending || ports[i].tx_active || ports[i].waiting;
+}
 static uint8_t begin(uint8_t i, uint8_t operation)
 {
     Port *p;
-    if(i>=ARM_AXIS_COUNT || ArmCAN_Busy()) return 0U;
+    if(i>=ARM_AXIS_COUNT) return 0U;
+    if(operation==2U && i!=ARM_YAW) {
+        uint8_t other=other_linear_axis(i);
+        if(ArmCAN_AxisBusy(i) || ArmCAN_AxisBusy(ARM_YAW)) return 0U;
+        /* An origin record, probe or pending stop on the other axis is exclusive. */
+        if(ArmCAN_AxisBusy(other) && ports[other].operation!=2U) return 0U;
+    } else if(ArmCAN_Busy()) return 0U;
     p=&ports[i];
     /* On a shared bus these addresses must never overlap chassis 1..4. */
     if(arm_motor_status[i].address<5U || arm_motor_status[i].address>7U) return 0U;
@@ -291,6 +307,7 @@ void ArmCAN_StopAll(void)
     uint8_t i;
     for(i=0;i<ARM_AXIS_COUNT;i++) {
         Port *p=&ports[i];
+        if(p->stop_pending) continue;
         /* CAN sends finish before returning; no UART/DMA owns this axis. */
         p->tx_active=p->waiting=p->reply=p->operation=0U;
         p->stop_pending=1U; p->stop_attempts=0U;
@@ -388,6 +405,12 @@ void ArmCAN_Task(void)
             /* The CAN transfer is already complete; only reply may time out. */
             p->tx_active=p->waiting=0U;
         }
+        advance(i);
+        arm_motor_status[i].tick=now;
+    }
+    /* A fault on a later port can queue a stop for an earlier port in this pass. */
+    for(i=0;i<ARM_AXIS_COUNT;i++) {
+        Port *p=&ports[i];
         if(p->stop_pending && !p->waiting && !p->tx_active) {
             /* Stop is idempotent; retry only this command, never a motion. */
             if(p->reply && p->expected==0xFEU) p->stop_pending=0U;
@@ -396,7 +419,5 @@ void ArmCAN_Task(void)
                 send(i,0xFEU,5U);
             } else p->stop_pending=0U;
         }
-        advance(i);
-        arm_motor_status[i].tick=now;
     }
 }

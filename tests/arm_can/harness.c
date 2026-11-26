@@ -224,6 +224,39 @@ int run_case(uint32_t test)
         CHECK(arm_motor_status[ARM_YAW].state==ARM_MOTOR_FAULT && !arm_motor_status[ARM_YAW].homed &&
               arm_can_diag[ARM_YAW].fault_code==ARM_MOTOR_FLAGS && arm_can_diag[ARM_YAW].fault_stage==4U &&
               arm_can_diag[ARM_YAW].fault_function==0x35U && !move_count && stop_count==1U,253);
+    } else if(test==27 || test==28) {
+        for(i=0U;i<ARM_AXIS_COUNT;i++) CHECK(home(i),270);
+        CHECK(!ArmCAN_AxisBusy(ARM_AXIS_COUNT) && !ArmCAN_Busy(),271);
+        CHECK(ArmCAN_Probe(ARM_REACH) && !ArmCAN_Move(ARM_Z,9000),272);
+        step(100);
+        CHECK(ArmCAN_RecordOrigin(ARM_Z) && !ArmCAN_Move(ARM_REACH,-18000),273);
+        step(100);
+        CHECK(ArmCAN_Move(ARM_Z,9000) && ArmCAN_Move(ARM_REACH,-18000),274);
+        CHECK(ArmCAN_AxisBusy(ARM_Z) && ArmCAN_AxisBusy(ARM_REACH) && !ArmCAN_AxisBusy(ARM_YAW) &&
+              ArmCAN_Busy(),275);
+        CHECK(!ArmCAN_Move(ARM_YAW,9000) && !ArmCAN_Move(ARM_Z,6000) &&
+              !ArmCAN_Probe(ARM_YAW) && !ArmCAN_RecordOrigin(ARM_YAW),276);
+        step(80);
+        CHECK(moving[ARM_Z] && moving[ARM_REACH] && move_count==2U,277);
+        if(test==28) {
+            const uint8_t f[3]={0x3A,1,0x6B};
+            for(i=0U;i<128U;i++) ArmCAN_RxFrame(0x700,f,3);
+            step(1);
+            CHECK(arm_motor_status[ARM_REACH].fault==ARM_MOTOR_RX_OVERFLOW &&
+                  arm_motor_status[ARM_Z].state==ARM_MOTOR_STOPPED,280);
+            CHECK(!moving[ARM_Z] && !moving[ARM_REACH] && stop_count==3U && move_count==2U,281);
+            step(100);
+            CHECK(!ArmCAN_Busy() && stop_count==3U,282);
+        } else {
+            step(1800);
+            CHECK(!ArmCAN_AxisBusy(ARM_Z) && ArmCAN_AxisBusy(ARM_REACH) &&
+                  !ArmCAN_Move(ARM_YAW,9000),278);
+            step(2000);
+            CHECK(!ArmCAN_Busy() && ArmCAN_Move(ARM_YAW,9000) &&
+                  !ArmCAN_Move(ARM_Z,3000) && !ArmCAN_Move(ARM_REACH,-3000),279);
+            step(2000);
+            CHECK(arm_motor_status[ARM_YAW].state==ARM_MOTOR_DONE && move_count==3U && !stop_count,283);
+        }
     } else return 999;
     return 0;
 }

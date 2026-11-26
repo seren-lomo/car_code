@@ -57,6 +57,7 @@ extern volatile ArmMotorStatus_t arm_motor_status[ARM_AXIS_COUNT];
 HAL_StatusTypeDef ArmCAN_Init(void);
 void ArmCAN_Task(void);
 uint8_t ArmCAN_Busy(void);
+uint8_t ArmCAN_AxisBusy(uint8_t i);
 uint8_t ArmCAN_Probe(uint8_t axis); /* one 0x36 read; no enable/move/zero */
 uint8_t ArmCAN_RecordOrigin(uint8_t axis); /* F3 enable, then verify stopped */
 uint8_t ArmCAN_Move(uint8_t axis, int32_t motor_cdeg);

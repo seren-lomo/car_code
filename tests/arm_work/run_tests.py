@@ -78,9 +78,9 @@ def run(case):
     print(f'case {case}: PASS')
 
 if args.tray:
-    cases = list(range(94, 113))
+    cases = list(range(94, 117))
 else:
-    cases = list(range(1, 43) if mode == 0 else range(50, 60)) + list(range(70, 100)) + list(range(103, 106)) + list(range(108, 113))
+    cases = list(range(1, 43) if mode == 0 else range(50, 60)) + list(range(70, 100)) + list(range(103, 106)) + list(range(108, 117))
 for case in cases:
     run(case)
 print(f'{len(cases)}/{len(cases)} arm workflow cases passed (mode={mode}, tray={args.tray}); hardware not tested.')

@@ -42,13 +42,20 @@ static uint8_t placed_slots[TRAY_CAPACITY], placed_count, reloaded_count;
 
 volatile ArmWorkStatus_t arm_work_status;
 volatile ArmWorkDebug_t arm_work_debug;
+#define AXIS_BIT(axis) ((uint8_t)(1U<<(axis)))
+typedef struct {
+    uint8_t axis_mask;
+    int32_t target[ARM_AXIS_COUNT];
+} ArmPlanStep_t;
+
 static uint8_t managed, plan_count, plan_index, moving, origin_index;
-static uint8_t plan_axis[5], saved[ARM_COMMAND_BYTES], have_saved;
+static uint8_t saved[ARM_COMMAND_BYTES], have_saved;
 static uint32_t highest_command, debug_trigger;
 #if ARM_VISION_TEST_MODE
 static uint32_t last_test_session;
 #endif
-static int32_t plan_target[5], aligned_z;
+static ArmPlanStep_t plan_steps[5];
+static int32_t aligned_z;
 static uint32_t plan_done_state, claw_closed_at;
 static uint8_t grip_abort_pending;
 enum {ALIGN_YAW_CLEARANCE, ALIGN_YAW_MICRO, ALIGN_YAW_MATERIAL};
@@ -210,20 +217,32 @@ HAL_StatusTypeDef ArmWork_Init(void)
     if (HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1) != HAL_OK) return HAL_ERROR;
     return ArmCAN_Init();
 }
-static void plan(uint8_t count,const uint8_t *axes,const int32_t *targets,uint32_t after)
+static void start_plan(uint32_t after)
 {
-    uint8_t i;
-    plan_count=count; plan_index=moving=0U; plan_align_yaw=ALIGN_YAW_CLEARANCE; plan_done_state=after;
-    for(i=0;i<count;i++) {plan_axis[i]=axes[i];plan_target[i]=targets[i];}
+    plan_count=plan_index=moving=0U;
+    plan_align_yaw=ALIGN_YAW_CLEARANCE; plan_done_state=after;
+}
+static void plan_axis(uint8_t axis,int32_t target)
+{
+    ArmPlanStep_t *step=&plan_steps[plan_count++];
+    step->axis_mask=AXIS_BIT(axis);
+    step->target[axis]=target;
+}
+static void plan_linear_axes(int32_t z,int32_t reach)
+{
+    ArmPlanStep_t *step=&plan_steps[plan_count++];
+    step->axis_mask=AXIS_BIT(ARM_Z)|AXIS_BIT(ARM_REACH);
+    step->target[ARM_Z]=z;
+    step->target[ARM_REACH]=reach;
 }
 static void lift_after_grip_abort(void)
 {
-    uint8_t axis=ARM_Z;
     grip_abort_pending=0U;
     claw_open();
     arm_work_status.aligned_command_id=0U;
     arm_work_status.target_cdeg[ARM_Z]=aligned_z;
-    plan(1U,&axis,&aligned_z,ARM_WORK_WAIT_VISION);
+    start_plan(ARM_WORK_WAIT_VISION);
+    plan_axis(ARM_Z,aligned_z);
     state(ARM_WORK_LIFTING);
 }
 /* Full-pose yaw moves use clearance; ALIGN micro moves have a separate gate. */
@@ -238,28 +257,38 @@ static uint8_t yaw_clear_now(void)
     return clearance_ok() && arm_motor_status[ARM_Z].position_cdeg>=ARM_YAW_MIN_Z_CDEG &&
         ArmCAN_PositionWithinTolerance(ARM_REACH,ARM_CLEAR_REACH_CDEG);
 }
+static uint8_t parallel_retract_ok(void)
+{
+    return ARM_PARALLEL_RETRACT_ENABLE &&
+        arm_motor_status[ARM_Z].position_cdeg>=ARM_PARALLEL_RETRACT_MIN_Z_CDEG;
+}
 static uint8_t full_pose_plan(const int32_t *pose,uint32_t after,uint8_t move_final_z)
 {
-    uint8_t axes[5]={ARM_Z,ARM_REACH,ARM_YAW,ARM_REACH,ARM_Z};
-    uint8_t count=(move_final_z || pose[ARM_Z]!=ARM_CLEAR_Z_CDEG) ? 5U : 4U;
-    int32_t targets[5]; uint8_t i;
+    uint8_t i,move_clear_reach=1U;
     if(!clearance_ok()) return 0U;
-    targets[0]=ARM_CLEAR_Z_CDEG;targets[1]=ARM_CLEAR_REACH_CDEG;
-    targets[2]=pose[ARM_YAW];targets[3]=pose[ARM_REACH];targets[4]=pose[ARM_Z];
-    for(i=0;i<count;i++) if(!axis_target_ok(axes[i],targets[i])) return 0U;
+    for(i=0U;i<ARM_AXIS_COUNT;i++) if(!axis_target_ok(i,pose[i])) return 0U;
     /* Material alignment normally reuses clearance left by a tray operation.
      * An explicit return to the photo origin after an empty grip may use clearance. */
     if(after==ARM_WORK_ALIGNED) {
         if(ArmCAN_PositionWithinTolerance(ARM_REACH,ARM_CLEAR_REACH_CDEG)) {
-            for(i=1U;i+1U<count;i++) {axes[i]=axes[i+1U];targets[i]=targets[i+1U];}
-            count--;
+            move_clear_reach=0U;
         } else if(material_work() &&
                   (arm_work_status.state!=ARM_WORK_WAIT_VISION ||
                    arm_work_status.opcode!=CMD_GRIP_ABORT ||
                    pose[ARM_Z] || pose[ARM_YAW] || pose[ARM_REACH])) return 0U;
     }
-    for(i=0;i<3U;i++) arm_work_status.target_cdeg[i]=pose[i];
-    plan(count,axes,targets,after); return 1U;
+    start_plan(after);
+    if(move_clear_reach && parallel_retract_ok()) {
+        plan_linear_axes(ARM_CLEAR_Z_CDEG,ARM_CLEAR_REACH_CDEG);
+    } else {
+        plan_axis(ARM_Z,ARM_CLEAR_Z_CDEG);
+        if(move_clear_reach) plan_axis(ARM_REACH,ARM_CLEAR_REACH_CDEG);
+    }
+    plan_axis(ARM_YAW,pose[ARM_YAW]);
+    if(move_final_z || pose[ARM_Z]!=ARM_CLEAR_Z_CDEG) plan_linear_axes(pose[ARM_Z],pose[ARM_REACH]);
+    else plan_axis(ARM_REACH,pose[ARM_REACH]);
+    for(i=0U;i<ARM_AXIS_COUNT;i++) arm_work_status.target_cdeg[i]=pose[i];
+    return 1U;
 }
 static uint8_t pose_plan(const int32_t *pose,uint32_t after)
 {
@@ -294,10 +323,10 @@ static uint8_t direct_align_yaw_ok(int32_t target,uint8_t yaw_mode)
 }
 static uint8_t align_plan(const int32_t *pose)
 {
-    uint8_t axes[3],i,n=0U,move[3];int32_t targets[3];
+    uint8_t i,move[ARM_AXIS_COUNT];
     const int32_t current_z=arm_motor_status[ARM_Z].position_cdeg;
-    uint8_t lift_first,clear_low_reach,retract_first,yaw_mode;
-    for(i=0U;i<3U;i++)
+    uint8_t lift_first,clear_low_reach,retract_first,parallel_linear,yaw_mode;
+    for(i=0U;i<ARM_AXIS_COUNT;i++)
         move[i]=(uint8_t)(distance_cdeg(pose[i],arm_motor_status[i].position_cdeg)>arm_motor_config[i].tolerance_cdeg);
     yaw_mode=distance_cdeg(pose[ARM_YAW],arm_motor_status[ARM_YAW].position_cdeg)>ARM_ALIGN_MICRO_YAW_STEP_CDEG ?
         ALIGN_YAW_MATERIAL : ALIGN_YAW_MICRO;
@@ -315,16 +344,26 @@ static uint8_t align_plan(const int32_t *pose)
     retract_first=(uint8_t)(move[ARM_REACH] && move[ARM_YAW] && yaw_mode==ALIGN_YAW_MATERIAL &&
         pose[ARM_REACH]<arm_motor_status[ARM_REACH].position_cdeg &&
         pose[ARM_REACH]>=ARM_ALIGN_MICRO_MIN_REACH_CDEG);
-    if(clear_low_reach) {
-        if(!pose_ok(ARM_Z,ARM_CLEAR_Z_CDEG)) return 0U;
-        axes[n]=ARM_Z;targets[n++]=ARM_CLEAR_Z_CDEG;
-    } else if(lift_first) {axes[n]=ARM_Z;targets[n++]=pose[ARM_Z];}
-    if(retract_first) {axes[n]=ARM_REACH;targets[n++]=pose[ARM_REACH];}
-    if(move[ARM_YAW]) {axes[n]=ARM_YAW;targets[n++]=pose[ARM_YAW];}
-    if(move[ARM_REACH] && !retract_first) {axes[n]=ARM_REACH;targets[n++]=pose[ARM_REACH];}
-    if(clear_low_reach || (move[ARM_Z] && !lift_first)) {axes[n]=ARM_Z;targets[n++]=pose[ARM_Z];}
-    plan(n,axes,targets,ARM_WORK_ALIGNED);plan_align_yaw=yaw_mode;
-    for(i=0U;i<3U;i++) arm_work_status.target_cdeg[i]=pose[i];
+    if(clear_low_reach && !pose_ok(ARM_Z,ARM_CLEAR_Z_CDEG)) return 0U;
+    /* Keep both ends within the visual clearance band. For a wide turn,
+     * preserve the requested retraction before yaw if the Z move is a lift. */
+    parallel_linear=move[ARM_Z] && move[ARM_REACH] &&
+        current_z>=ARM_ALIGN_MICRO_MIN_Z_CDEG && pose[ARM_Z]>=ARM_ALIGN_MICRO_MIN_Z_CDEG &&
+        (!retract_first || lift_first);
+    start_plan(ARM_WORK_ALIGNED);plan_align_yaw=yaw_mode;
+    if(parallel_linear) {
+        if(retract_first) plan_linear_axes(pose[ARM_Z],pose[ARM_REACH]);
+        if(move[ARM_YAW]) plan_axis(ARM_YAW,pose[ARM_YAW]);
+        if(!retract_first) plan_linear_axes(pose[ARM_Z],pose[ARM_REACH]);
+    } else {
+        if(clear_low_reach) plan_axis(ARM_Z,ARM_CLEAR_Z_CDEG);
+        else if(lift_first) plan_axis(ARM_Z,pose[ARM_Z]);
+        if(retract_first) plan_axis(ARM_REACH,pose[ARM_REACH]);
+        if(move[ARM_YAW]) plan_axis(ARM_YAW,pose[ARM_YAW]);
+        if(move[ARM_REACH] && !retract_first) plan_axis(ARM_REACH,pose[ARM_REACH]);
+        if(clear_low_reach || (move[ARM_Z] && !lift_first)) plan_axis(ARM_Z,pose[ARM_Z]);
+    }
+    for(i=0U;i<ARM_AXIS_COUNT;i++) arm_work_status.target_cdeg[i]=pose[i];
     if(!move[ARM_Z] && !clear_low_reach) arm_work_status.target_cdeg[ARM_Z]=current_z;
     return 1U;
 }
@@ -659,13 +698,20 @@ RouteResult_t Route_OnAuxCommand(uint8_t type,const uint8_t *p,uint16_t length)
 #endif
         if (lower < z_min || lower > z_max) return ROUTE_BAD_VALUE;
         aligned_z = lift_z;
-        {uint8_t axis=ARM_Z;int32_t target=(int32_t)lower;plan(1U,&axis,&target,ARM_WORK_WAIT_GRIP);}
+        start_plan(ARM_WORK_WAIT_GRIP);
+        plan_axis(ARM_Z,(int32_t)lower);
         remember(p);arm_work_status.target_cdeg[ARM_Z]=(int32_t)lower;state(ARM_WORK_LOWERING);
     } else if(opcode==CMD_GRIP_DONE) {
-        uint8_t axis=ARM_Z;
         if(arm_work_status.state!=ARM_WORK_WAIT_GRIP || !reference ||
            reference!=arm_work_status.aligned_command_id)return ROUTE_BAD_STATE;
-        plan(1U,&axis,&aligned_z,ARM_WORK_PICKED);
+        start_plan(ARM_WORK_PICKED);
+#if ARM_TRAY_ENABLED
+        if(parallel_retract_ok() && aligned_z>=ARM_PARALLEL_RETRACT_MIN_Z_CDEG) {
+            plan_linear_axes(aligned_z,ARM_CLEAR_REACH_CDEG);
+            arm_work_status.target_cdeg[ARM_REACH]=ARM_CLEAR_REACH_CDEG;
+        } else
+#endif
+        plan_axis(ARM_Z,aligned_z);
         remember(p);arm_work_status.target_cdeg[ARM_Z]=aligned_z;state(ARM_WORK_LIFTING);
     } else if(opcode==CMD_GRIP_ABORT) {
         if((arm_work_status.state!=ARM_WORK_LOWERING && arm_work_status.state!=ARM_WORK_WAIT_GRIP) ||
@@ -705,17 +751,18 @@ static RouteResult_t debug_move(uint32_t selected,int32_t target,uint8_t return_
         if(selected>=ARM_AXIS_COUNT) return ROUTE_BAD_VALUE;
         axis=(uint8_t)selected;
         if(!pose_ok(axis,target)) return ROUTE_BAD_VALUE;
+        if(axis==ARM_YAW && !clearance_ok()) return ROUTE_BAD_VALUE;
+        start_plan(ARM_WORK_DEBUG_HOLD);
         for(i=0;i<ARM_AXIS_COUNT;i++)
             arm_work_status.target_cdeg[i]=arm_motor_status[i].position_cdeg;
         arm_work_status.target_cdeg[axis]=target;
         if(axis==ARM_YAW) {
-            const uint8_t axes[3]={ARM_Z,ARM_REACH,ARM_YAW};
-            int32_t targets[3]={ARM_CLEAR_Z_CDEG,ARM_CLEAR_REACH_CDEG,target};
-            if(!clearance_ok()) return ROUTE_BAD_VALUE;
             arm_work_status.target_cdeg[ARM_Z]=ARM_CLEAR_Z_CDEG;
             arm_work_status.target_cdeg[ARM_REACH]=ARM_CLEAR_REACH_CDEG;
-            plan(3U,axes,targets,ARM_WORK_DEBUG_HOLD);
-        } else plan(1U,&axis,&target,ARM_WORK_DEBUG_HOLD);
+            plan_axis(ARM_Z,ARM_CLEAR_Z_CDEG);
+            plan_axis(ARM_REACH,ARM_CLEAR_REACH_CDEG);
+        }
+        plan_axis(axis,target);
         state(ARM_WORK_DEBUG_MOVING);
     }
     return ROUTE_OK;
@@ -724,7 +771,7 @@ static RouteResult_t debug_move(uint32_t selected,int32_t target,uint8_t return_
 void ArmWork_Task(void)
 {
     uint8_t axis;
-    uint16_t tolerance=0U;
+    const ArmPlanStep_t *step;
     ArmCAN_Task();
     if(arm_work_debug.trigger!=debug_trigger) {
         debug_trigger=arm_work_debug.trigger;
@@ -760,9 +807,15 @@ void ArmWork_Task(void)
         } else {fail(ARM_WORK_CONTEXT,255U);return;}
     }
     if((managed || plan_count) && !origins()) {
-        for(axis=0U;axis<3U;axis++)
-            if(!arm_motor_status[axis].homed || arm_motor_status[axis].state==ARM_MOTOR_FAULT) break;
-        fail(ARM_WORK_MOTOR,axis);return;
+        uint8_t failed_axis=ARM_AXIS_COUNT;
+        for(axis=0U;axis<ARM_AXIS_COUNT;axis++) {
+            if(arm_motor_status[axis].state==ARM_MOTOR_FAULT) {
+                failed_axis=axis;
+                break;
+            }
+            if(!arm_motor_status[axis].homed && failed_axis==ARM_AXIS_COUNT) failed_axis=axis;
+        }
+        fail(ARM_WORK_MOTOR,failed_axis);return;
     }
     if(arm_work_status.state==ARM_WORK_ZEROING) {
         axis=origin_index;
@@ -789,11 +842,15 @@ void ArmWork_Task(void)
         material_work() && plan_done_state==ARM_WORK_PICKED &&
 #endif
         (uint32_t)(HAL_GetTick() - claw_closed_at) < ARM_CLAW_CLOSE_MS) return;
-    axis=plan_axis[plan_index];arm_work_status.active_axis=axis;
-    if(arm_motor_status[axis].state==ARM_MOTOR_FAULT) {fail(ARM_WORK_MOTOR,axis);return;}
     if(moving) {
-        if(ArmCAN_Busy())return;
-        if(arm_motor_status[axis].state!=ARM_MOTOR_DONE) {fail(ARM_WORK_MOTOR,axis);return;}
+        uint8_t busy=0U;
+        step=&plan_steps[plan_index];
+        for(axis=0U;axis<ARM_AXIS_COUNT;axis++) {
+            if(!(step->axis_mask & AXIS_BIT(axis))) continue;
+            if(ArmCAN_AxisBusy(axis)) busy=1U;
+            else if(arm_motor_status[axis].state!=ARM_MOTOR_DONE) {fail(ARM_WORK_MOTOR,axis);return;}
+        }
+        if(busy) return;
         moving=0U;plan_index++;
     }
     if(plan_index==plan_count) {
@@ -819,18 +876,25 @@ void ArmWork_Task(void)
         }
         state(plan_done_state);return;
     }
-    axis=plan_axis[plan_index];arm_work_status.active_axis=axis;
-    if(axis==ARM_YAW) {
-        uint8_t allowed=plan_align_yaw==ALIGN_YAW_CLEARANCE ? yaw_clear_now() :
-            direct_align_yaw_ok(plan_target[plan_index],plan_align_yaw);
+    step=&plan_steps[plan_index];
+    arm_work_status.active_axis=255U;
+    for(axis=0U;axis<ARM_AXIS_COUNT;axis++) {
+        uint16_t tolerance=0U;
+        if(!(step->axis_mask & AXIS_BIT(axis))) continue;
+        if(arm_work_status.active_axis==255U) arm_work_status.active_axis=axis;
+        if(axis==ARM_YAW) {
+            uint8_t allowed=plan_align_yaw==ALIGN_YAW_CLEARANCE ? yaw_clear_now() :
+                direct_align_yaw_ok(step->target[axis],plan_align_yaw);
 #if ARM_TRAY_ENABLED
-        if(tray_actions && !ArmCAN_PositionWithinTolerance(ARM_Z,ARM_CLEAR_Z_CDEG)) allowed=0U;
+            if(tray_actions && !ArmCAN_PositionWithinTolerance(ARM_Z,ARM_CLEAR_Z_CDEG)) allowed=0U;
 #endif
-        if(!allowed) {fail(ARM_WORK_POSE,axis);return;}
+            if(!allowed) {fail(ARM_WORK_POSE,axis);return;}
+        }
+        if(axis==ARM_REACH && plan_done_state==ARM_WORK_ALIGNED &&
+           step->target[axis]!=ARM_CLEAR_REACH_CDEG) tolerance=ARM_ALIGN_REACH_TOLERANCE_CDEG;
+        if(!ArmCAN_MoveWithTolerance(axis,step->target[axis],tolerance)) {
+            fail(ARM_WORK_POSE,axis);return;
+        }
     }
-    if(axis==ARM_REACH && plan_done_state==ARM_WORK_ALIGNED &&
-       plan_target[plan_index]!=ARM_CLEAR_REACH_CDEG)
-        tolerance=ARM_ALIGN_REACH_TOLERANCE_CDEG;
-    if(!ArmCAN_MoveWithTolerance(axis,plan_target[plan_index],tolerance)) {fail(ARM_WORK_POSE,axis);return;}
     moving=1U;
 }
