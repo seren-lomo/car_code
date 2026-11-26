@@ -360,9 +360,10 @@ static RouteResult_t claw_command(uint16_t work,uint32_t id,uint8_t op,uint32_t 
 static int grip_abort_case(uint32_t test)
 {
     const uint16_t work=ROUTE_WORK_MATERIAL_1;
-    const int32_t pickup_reach=test==110 ? -9000 : -25000;
-    uint32_t id=2U,z_before,yaw_before,reach_before;
-    int32_t photo_z;
+    const int32_t pickup_reach=test==111 ? -25000 : -9000;
+    const uint8_t abort_while_lowering=(uint8_t)(test==112);
+    uint32_t id=2U,z_before,yaw_before,reach_before,closes_before,stops_before;
+    int32_t photo_z,lower_z;
 #if ARM_TRAY_ENABLED
     uint32_t pwm_before;
 #endif
@@ -384,7 +385,16 @@ static int grip_abort_case(uint32_t test)
     CHECK(micro_command(id,-900,1200,pickup_reach)==ROUTE_OK && until(ARM_WORK_ALIGNED),1106);
     photo_z=arm_motor_status[ARM_Z].position_cdeg;
     CHECK(claw_command(work,id+2U,9,id)==ROUTE_BAD_STATE,1107);
-    CHECK(claw_command(work,id+1U,3,id)==ROUTE_OK && until(ARM_WORK_WAIT_GRIP),1108);
+    CHECK(claw_command(work,id+1U,3,id)==ROUTE_OK,1108);
+    lower_z=arm_work_status.target_cdeg[ARM_Z];
+    if(abort_while_lowering) {
+        uint32_t elapsed;
+        for(elapsed=0U;elapsed<10000U && arm_work_status.state==ARM_WORK_LOWERING &&
+            arm_motor_status[ARM_Z].position_cdeg>-54000;elapsed++) step(1);
+        CHECK(arm_work_status.state==ARM_WORK_LOWERING && arm_work_status.active_axis==ARM_Z &&
+              arm_motor_status[ARM_Z].position_cdeg<=-54000 &&
+              arm_motor_status[ARM_Z].position_cdeg>lower_z,1130);
+    } else CHECK(until(ARM_WORK_WAIT_GRIP),1108);
     CHECK(claw_command(work,id+2U,9,id+1U)==ROUTE_BAD_STATE,1109);
     put32(packet+28,id);
     packet[13]=1U;
@@ -392,12 +402,19 @@ static int grip_abort_case(uint32_t test)
     packet[13]=0U;
     put32(packet+16,1U);
     CHECK(Route_OnAuxCommand(0x31,packet,32)==ROUTE_BAD_VALUE,1111);
-    CHECK(pwm_compare==ARM_CLAW_CLOSED_COMPARE,1112);
+    CHECK(pwm_compare==(abort_while_lowering ? ARM_CLAW_OPEN_COMPARE : ARM_CLAW_CLOSED_COMPARE),1112);
     z_before=axis_moves[ARM_Z];yaw_before=axis_moves[ARM_YAW];reach_before=axis_moves[ARM_REACH];
+    closes_before=pwm_close_count;stops_before=stop_count;
     CHECK(claw_command(work,id+2U,9,id)==ROUTE_OK && pwm_compare==ARM_CLAW_OPEN_COMPARE,1113);
+    CHECK(claw_command(work,id+2U,9,id)==ROUTE_OK,1115);
+    if(abort_while_lowering) {
+        CHECK(report_bytes[24]==ARM_WORK_LOWERING && report_bytes[27]==9U &&
+              arm_work_status.target_cdeg[ARM_Z]==lower_z && arm_work_status.aligned_command_id==id,1131);
+        CHECK(claw_command(work,id+3U,4,id)==ROUTE_BAD_STATE,1132);
+        CHECK(until(ARM_WORK_LIFTING) && ArmCAN_PositionWithinTolerance(ARM_Z,lower_z),1133);
+    }
     CHECK(arm_work_status.state==ARM_WORK_LIFTING && !arm_work_status.aligned_command_id &&
           arm_work_status.target_cdeg[ARM_Z]==photo_z,1114);
-    CHECK(claw_command(work,id+2U,9,id)==ROUTE_OK,1115);
     step(1);
     CHECK(ArmCAN_Busy() && arm_work_status.active_axis==ARM_Z,1116);
     CHECK(until(ARM_WORK_WAIT_VISION) && ArmCAN_PositionWithinTolerance(ARM_Z,photo_z),1117);
@@ -406,6 +423,9 @@ static int grip_abort_case(uint32_t test)
     CHECK(arm_work_status.state==ARM_WORK_WAIT_VISION && pwm_compare==ARM_CLAW_OPEN_COMPARE &&
           axis_moves[ARM_Z]==z_before+1U && axis_moves[ARM_YAW]==yaw_before &&
           axis_moves[ARM_REACH]==reach_before,1119);
+    CHECK(pwm_close_count==closes_before && stop_count==stops_before && (report_bytes[28]&1U) &&
+          arm_motor_status[ARM_Z].homed && arm_motor_status[ARM_YAW].homed &&
+          arm_motor_status[ARM_REACH].homed,1134);
 #if ARM_TRAY_ENABLED
     CHECK(tray_pwm_writes==pwm_before && report_bytes[30]==1U && !(report_bytes[28]&32U),1120);
 #endif
@@ -825,7 +845,7 @@ int run_case(uint32_t test)
     uint8_t i;uint32_t before;
     CHECK(ArmWork_Init()==HAL_OK,1);RouteKeys_Init();
     for(i=0;i<3;i++){pos[i]=1000*(i+1);target[i]=pos[i];}
-    if(test==110 || test==111) return grip_abort_case(test);
+    if(test>=110 && test<=112) return grip_abort_case(test);
     if((test>=103 && test<=105) || test==108 || test==109) return micro_case(test);
     if(test==99) {
         uint16_t report_flags;

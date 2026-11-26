@@ -22,10 +22,10 @@
  * No stepper motion occurs at boot; explicitly record the manually set pose.
  */
 #define ARM_PULSES_PER_REV       3200U /* 200 steps * MStep 16 */
-#define ARM_Z_RPM                90U
+#define ARM_Z_RPM                180U
 #define ARM_YAW_RPM              40U
-#define ARM_REACH_RPM            50U
-#define ARM_ACCELERATION         100U
+#define ARM_REACH_RPM            85U
+#define ARM_ACCELERATION         200U
 #define ARM_TOLERANCE_CDEG       50U
 #define ARM_Z_MIN_CDEG          (-130500L) /* 145 mm * 900 cdeg/mm */
 #define ARM_Z_MAX_CDEG           0L /* origin = uppermost; +Z goes up */

@@ -50,6 +50,7 @@ static uint32_t last_test_session;
 #endif
 static int32_t plan_target[5], aligned_z;
 static uint32_t plan_done_state, claw_closed_at;
+static uint8_t grip_abort_pending;
 enum {ALIGN_YAW_CLEARANCE, ALIGN_YAW_MICRO, ALIGN_YAW_MATERIAL};
 static uint8_t plan_align_yaw;
 static uint16_t event_sequence;
@@ -169,6 +170,7 @@ static void fail(uint32_t fault,uint8_t axis)
     uint32_t id=arm_work_status.route_id; uint16_t index=arm_work_status.point_index;
     arm_work_status.fault=fault; arm_work_status.active_axis=axis;
     plan_count=plan_index=moving=0U; managed=0U;
+    grip_abort_pending=0U;
     ArmCAN_StopAll();
     cancel_claw();
     state(ARM_WORK_FAULT);
@@ -187,6 +189,7 @@ HAL_StatusTypeDef ArmWork_Init(void)
     destination_slot=destination_mask=0U;
 #endif
     managed=plan_count=plan_index=moving=origin_index=have_saved=0U;
+    grip_abort_pending=0U;
     highest_command=debug_trigger=event_sequence=0U;
 #if ARM_VISION_TEST_MODE
     last_test_session=0U;
@@ -212,6 +215,16 @@ static void plan(uint8_t count,const uint8_t *axes,const int32_t *targets,uint32
     uint8_t i;
     plan_count=count; plan_index=moving=0U; plan_align_yaw=ALIGN_YAW_CLEARANCE; plan_done_state=after;
     for(i=0;i<count;i++) {plan_axis[i]=axes[i];plan_target[i]=targets[i];}
+}
+static void lift_after_grip_abort(void)
+{
+    uint8_t axis=ARM_Z;
+    grip_abort_pending=0U;
+    claw_open();
+    arm_work_status.aligned_command_id=0U;
+    arm_work_status.target_cdeg[ARM_Z]=aligned_z;
+    plan(1U,&axis,&aligned_z,ARM_WORK_WAIT_VISION);
+    state(ARM_WORK_LIFTING);
 }
 /* Full-pose yaw moves use clearance; ALIGN micro moves have a separate gate. */
 static uint8_t clearance_ok(void)
@@ -437,6 +450,7 @@ static void begin_work(uint32_t id,uint16_t index,uint16_t work)
     uint8_t axis;
     if(!work_known(work)) return; /* QR and home keep the existing Pi work gate */
     managed=1U; highest_command=0U; have_saved=0U;
+    grip_abort_pending=0U;
 #if ARM_TRAY_ENABLED
     destination_slot=destination_mask=placed_count=reloaded_count=0U;
 #endif
@@ -474,6 +488,7 @@ void Route_OnStop(void)
 {
     if(!Route_AuxIsBusy() || arm_work_status.state==ARM_WORK_FAULT) return;
     managed=0U;plan_count=plan_index=moving=0U;
+    grip_abort_pending=0U;
     ArmCAN_StopAll();
     cancel_claw();
     arm_work_status.fault=ARM_WORK_CANCELLED;
@@ -646,19 +661,21 @@ RouteResult_t Route_OnAuxCommand(uint8_t type,const uint8_t *p,uint16_t length)
         aligned_z = lift_z;
         {uint8_t axis=ARM_Z;int32_t target=(int32_t)lower;plan(1U,&axis,&target,ARM_WORK_WAIT_GRIP);}
         remember(p);arm_work_status.target_cdeg[ARM_Z]=(int32_t)lower;state(ARM_WORK_LOWERING);
-    } else if(opcode==CMD_GRIP_DONE || opcode==CMD_GRIP_ABORT) {
+    } else if(opcode==CMD_GRIP_DONE) {
         uint8_t axis=ARM_Z;
-        uint32_t after=ARM_WORK_PICKED;
         if(arm_work_status.state!=ARM_WORK_WAIT_GRIP || !reference ||
            reference!=arm_work_status.aligned_command_id)return ROUTE_BAD_STATE;
-        if(opcode==CMD_GRIP_ABORT) {
-            claw_open();
-            arm_work_status.aligned_command_id=0U;
-            /* At photo height, wait for vision to send the return-to-origin ALIGN. */
-            after=ARM_WORK_WAIT_VISION;
-        }
-        plan(1U,&axis,&aligned_z,after);
+        plan(1U,&axis,&aligned_z,ARM_WORK_PICKED);
         remember(p);arm_work_status.target_cdeg[ARM_Z]=aligned_z;state(ARM_WORK_LIFTING);
+    } else if(opcode==CMD_GRIP_ABORT) {
+        if((arm_work_status.state!=ARM_WORK_LOWERING && arm_work_status.state!=ARM_WORK_WAIT_GRIP) ||
+           !reference || reference!=arm_work_status.aligned_command_id) return ROUTE_BAD_STATE;
+        remember(p);
+        if(arm_work_status.state==ARM_WORK_LOWERING) {
+            /* Complete the current Z move before reversing, with the claw open. */
+            grip_abort_pending=1U;
+            report();
+        } else lift_after_grip_abort();
     } else {
         if(arm_work_status.state!=ARM_WORK_WAIT_VISION && arm_work_status.state!=ARM_WORK_ALIGNED &&
            arm_work_status.state!=ARM_WORK_PICKED && arm_work_status.state!=ARM_WORK_PLACED) return ROUTE_BAD_STATE;
@@ -781,6 +798,10 @@ void ArmWork_Task(void)
     }
     if(plan_index==plan_count) {
         plan_count=0U;arm_work_status.active_axis=255U;
+        if(plan_done_state==ARM_WORK_WAIT_GRIP && grip_abort_pending) {
+            lift_after_grip_abort();
+            return;
+        }
 #if ARM_TRAY_ENABLED
         if(tray_actions) return;
         if(plan_done_state==ARM_WORK_PICKED) {

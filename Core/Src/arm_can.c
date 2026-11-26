@@ -4,8 +4,8 @@
 #define RX_SIZE 128U
 #define REPLY_MS 80U
 #define MOTION_MAX_MS 120000U
-#define POLL_MS 20U
-#define SETTLE_MS 100U
+#define POLL_MS 10U
+#define SETTLE_MS 30U
 
 volatile ArmMotorConfig_t arm_motor_config[ARM_AXIS_COUNT] = {
     {0U,0,0,10U,50U,100U}, {0U,0,0,10U,50U,100U}, {0U,0,0,10U,50U,100U}
