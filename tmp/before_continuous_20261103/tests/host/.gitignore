@@ -1,5 +1,0 @@
-*.obj
-*.dll
-*.lib
-*.exp
-__pycache__/
