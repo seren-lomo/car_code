@@ -67,8 +67,8 @@
  * is at a clear height. Z and reach can move together outside the yaw step.
  */
 #define ARM_ALIGN_MICRO_YAW_STEP_CDEG   300L
-#define ARM_MATERIAL_ALIGN_YAW_STEP_CDEG  13500L /* max 45 degrees per direct turn at Z clearance */
-#define ARM_MATERIAL_ALIGN_YAW_LIMIT_CDEG 13500L /* direct-turn sector: +/-45 degrees from work origin */
+#define ARM_MATERIAL_ALIGN_YAW_STEP_CDEG  24000L //单次步长/* max 45 degrees per direct turn at Z clearance */
+#define ARM_MATERIAL_ALIGN_YAW_LIMIT_CDEG 24000L //原料区直转扇区限幅45-80/* direct-turn sector: +/-45 degrees from work origin */
 #define ARM_ALIGN_MICRO_MIN_Z_CDEG      ARM_YAW_MIN_Z_CDEG
 #define ARM_ALIGN_MICRO_MIN_REACH_CDEG  ARM_CLEAR_REACH_CDEG
 #define ARM_ALIGN_REACH_TOLERANCE_CDEG 90U /* visual reach move completion only */
@@ -82,7 +82,7 @@
 #define ARM_TRAY_SECOND_COMPARE  150U
 #define ARM_TRAY_THIRD_COMPARE   250U
 #define ARM_TRAY_SETTLE_MS       1000U /* allow the full two-index sweep */
-#define ARM_CLAW_RELEASE_MS      250U
+#define ARM_CLAW_RELEASE_MS      200U
 #define ARM_TRAY_UNLOAD_RELEASE_MS 500U
 #define ARM_TRAY_REACH_CDEG      (-33421L) /* 110 mm back at 113.1 mm per turn *///转yaw后退的距离
 #define ARM_TRAY_YAW_CDEG        43500L    /* +120 degrees at the arm, 3:1 reduction  1度300  44100*/

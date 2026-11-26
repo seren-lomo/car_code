@@ -27,7 +27,7 @@ typedef enum {
     TRAY_RELEASE, TRAY_ADVANCE, TRAY_COMPLETE,
     TRAY_LOAD_TURN, TRAY_LOAD_REACH, TRAY_LOAD_LOWER, TRAY_LOAD_LIFT, TRAY_LOAD_RETURN
 } TrayAction_t;
-static const TrayAction_t tray_load_actions[]={
+static const TrayAction_t tray_load_actions[]={                                         
     TRAY_LOAD_TURN,TRAY_LOAD_REACH,TRAY_LOAD_LOWER,TRAY_RELEASE,
     TRAY_LOAD_LIFT,TRAY_LOAD_RETURN,TRAY_COMPLETE
 };
