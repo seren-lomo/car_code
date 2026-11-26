@@ -1,1 +1,0 @@
-..\tmp\arm_vehicle_build\startup_stm32f103xe.o: startup_stm32f103xe.s
