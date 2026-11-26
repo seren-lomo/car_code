@@ -82,10 +82,11 @@
 #define ARM_TRAY_SECOND_COMPARE  150U
 #define ARM_TRAY_THIRD_COMPARE   250U
 #define ARM_TRAY_SETTLE_MS       1000U /* allow the full two-index sweep */
-#define ARM_CLAW_RELEASE_MS      500U
+#define ARM_CLAW_RELEASE_MS      250U
+#define ARM_TRAY_UNLOAD_RELEASE_MS 500U
 #define ARM_TRAY_REACH_CDEG      (-33421L) /* 110 mm back at 113.1 mm per turn *///转yaw后退的距离
 #define ARM_TRAY_YAW_CDEG        43500L    /* +120 degrees at the arm, 3:1 reduction  1度300  44100*/
-#define ARM_TRAY_PLACE_Z_CDEG    0L        /* release at the upper origin */
+#define ARM_TRAY_PLACE_Z_CDEG    (-5400L)  /* release 6 mm below the upper origin */
 #define ARM_TRAY_PICK_Z_CDEG     0L        /* grip at the upper origin */
 #if ARM_TRAY_ENABLED
 /* Only the fixed tray approach uses this extended positive yaw range. */

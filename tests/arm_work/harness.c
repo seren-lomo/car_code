@@ -9,6 +9,7 @@ static uint32_t pwm_compare, pwm_close_count, pwm_bad_channel, tick;
 #if ARM_TRAY_ENABLED
 static uint32_t tray_pwm_log[16], tray_pwm_writes, tray_pwm_starts, tray_changed_at;
 static uint32_t tray_timing_errors, tray_pick_index[6], tray_picks, tray_z_moves, z_moves_at_tray_yaw;
+static uint32_t load_yaw_at,load_yaw_done_at,load_reach_at,load_release_at,load_return_moves;
 static int32_t placed_z[6], placed_yaw[6], placed_reach[6];
 static uint32_t placements;
 #endif
@@ -16,11 +17,13 @@ void mock_tim_set_compare(TIM_HandleTypeDef *timer,uint32_t channel,uint32_t val
 {
 #if ARM_TRAY_ENABLED
     if(timer==&htim3 && channel==TIM_CHANNEL_2) {
+        const uint8_t loading=(uint8_t)(arm_work_status.state==ARM_WORK_TRAY_LOADING);
         if(tray_pwm_writes<16) tray_pwm_log[tray_pwm_writes]=value;
         tray_pwm_writes++;
         tray_changed_at=tick;
-        if(ArmCAN_Busy() || !ArmCAN_PositionWithinTolerance(ARM_Z,ARM_CLEAR_Z_CDEG) ||
-           !ArmCAN_PositionWithinTolerance(ARM_YAW,ARM_TRANSPORT_YAW_CDEG) ||
+        if((loading ? (load_yaw_at!=tick || !ArmCAN_AxisBusy(ARM_YAW)) :
+             (ArmCAN_Busy() || !ArmCAN_PositionWithinTolerance(ARM_YAW,ARM_TRANSPORT_YAW_CDEG))) ||
+           !ArmCAN_PositionWithinTolerance(ARM_Z,ARM_CLEAR_Z_CDEG) ||
            !ArmCAN_PositionWithinTolerance(ARM_REACH,ARM_CLEAR_REACH_CDEG)) tray_timing_errors++;
         return;
     }
@@ -33,11 +36,13 @@ void mock_tim_set_compare(TIM_HandleTypeDef *timer,uint32_t channel,uint32_t val
            tray_z_moves!=z_moves_at_tray_yaw) tray_timing_errors++;
     }
     if(pwm_compare==ARM_CLAW_CLOSED_COMPARE && value==ARM_CLAW_OPEN_COMPARE) {
-        if(arm_work_status.state==ARM_WORK_TRAY_LOADING &&
-           (!ArmCAN_PositionWithinTolerance(ARM_Z,ARM_TRAY_PLACE_Z_CDEG) ||
-            !ArmCAN_PositionWithinTolerance(ARM_YAW,ARM_TRAY_YAW_CDEG) ||
-            !ArmCAN_PositionWithinTolerance(ARM_REACH,ARM_TRAY_REACH_CDEG) ||
-            tray_z_moves!=z_moves_at_tray_yaw)) tray_timing_errors++;
+        if(arm_work_status.state==ARM_WORK_TRAY_LOADING) {
+            load_release_at=tick;
+            if(ArmCAN_Busy() || !ArmCAN_PositionWithinTolerance(ARM_Z,ARM_TRAY_PLACE_Z_CDEG) ||
+               !ArmCAN_PositionWithinTolerance(ARM_YAW,ARM_TRAY_YAW_CDEG) ||
+               !ArmCAN_PositionWithinTolerance(ARM_REACH,ARM_TRAY_REACH_CDEG) ||
+               tray_z_moves!=z_moves_at_tray_yaw+1U) tray_timing_errors++;
+        }
         if(arm_work_status.state==ARM_WORK_TRAY_UNLOADING && placements<6U) {
             placed_z[placements]=arm_motor_status[ARM_Z].position_cdeg;
             placed_yaw[placements]=arm_motor_status[ARM_YAW].position_cdeg;
@@ -119,10 +124,33 @@ void can_SendCmd(volatile uint8_t *f,uint8_t n)
     r[0]=f[0];r[1]=function;r[2]=2;r[3]=0x6B;response_n[i]=4;
     if(function==0xFE) {stop_count++;moving[i]=0;target[i]=pos[i];if(stop_reject)r[2]=0xE2;}
     if(function==0xFD) {
+        uint8_t returning=0U;
         if(n!=13 || f[10]!=2 || f[11]!=0)return;
         move_count++;axis_moves[i]++;
 #if ARM_TRAY_ENABLED
-        if(tray_pwm_writes && (uint32_t)(tick-tray_changed_at)<ARM_TRAY_SETTLE_MS) tray_timing_errors++;
+        if(arm_work_status.state==ARM_WORK_TRAY_LOADING) {
+            returning=(uint8_t)(arm_work_status.target_cdeg[ARM_YAW]==ARM_TRANSPORT_YAW_CDEG);
+            if(i==ARM_YAW && !returning) {
+                load_yaw_at=tick;load_yaw_done_at=load_reach_at=load_release_at=0U;
+            } else if(i==ARM_REACH && !returning) {
+                const uint32_t settle_at=tray_changed_at+ARM_TRAY_SETTLE_MS;
+                const uint32_t ready_at=load_yaw_done_at>settle_at ? load_yaw_done_at : settle_at;
+                load_reach_at=tick;
+                if(!load_yaw_done_at || tick<ready_at || tick-ready_at>40U ||
+                   !ArmCAN_PositionWithinTolerance(ARM_Z,ARM_CLEAR_Z_CDEG) ||
+                   !ArmCAN_PositionWithinTolerance(ARM_YAW,ARM_TRAY_YAW_CDEG)) tray_timing_errors++;
+            } else if(i==ARM_Z) {
+                if(ArmCAN_AxisBusy(ARM_REACH) || ArmCAN_AxisBusy(ARM_YAW) ||
+                   !ArmCAN_PositionWithinTolerance(ARM_REACH,ARM_TRAY_REACH_CDEG)) tray_timing_errors++;
+                if(arm_work_status.target_cdeg[ARM_Z]==ARM_CLEAR_Z_CDEG &&
+                   (!load_release_at || tick-load_release_at<ARM_CLAW_RELEASE_MS ||
+                    tick-load_release_at>=ARM_TRAY_UNLOAD_RELEASE_MS)) tray_timing_errors++;
+            } else if(returning) {
+                if(!ArmCAN_PositionWithinTolerance(ARM_Z,ARM_CLEAR_Z_CDEG) ||
+                   !ArmCAN_AxisBusy(i==ARM_YAW ? ARM_REACH : ARM_YAW)) tray_timing_errors++;
+                if(i==ARM_YAW) load_return_moves++;
+            }
+        } else if(tray_pwm_writes && (uint32_t)(tick-tray_changed_at)<ARM_TRAY_SETTLE_MS) tray_timing_errors++;
         if(i==ARM_Z) tray_z_moves++;
         if(i==ARM_YAW && arm_motor_status[i].target_counts-arm_motor_status[i].origin_counts==(int64_t)ARM_TRAY_YAW_CDEG*65536/36000)
             z_moves_at_tray_yaw=tray_z_moves;
@@ -134,17 +162,17 @@ void can_SendCmd(volatile uint8_t *f,uint8_t n)
             int32_t tolerance=(int32_t)(ARM_TOLERANCE_CDEG*65536U/36000U+
                 32768U/ARM_PULSES_PER_REV+1U);
             if(error<0)error=-error;
-            if(z<ARM_YAW_MIN_Z_CDEG || error>tolerance)yaw_clearance_violations++;
+            if(z<ARM_YAW_MIN_Z_CDEG || (!returning && error>tolerance))yaw_clearance_violations++;
             if(ArmCAN_AxisBusy(ARM_Z) || ArmCAN_AxisBusy(ARM_REACH)) {
                 yaw_overlap_errors++;
-                if(arm_work_status.state==ARM_WORK_TRAY_LOADING ||
+                if((arm_work_status.state==ARM_WORK_TRAY_LOADING && !returning) ||
                    arm_work_status.state==ARM_WORK_TRAY_UNLOADING) tray_yaw_overlap_errors++;
             }
             linear_ticks_at_yaw=linear_overlap_ticks;
             yaw_preflight_rpm=0U;
         } else if(ArmCAN_AxisBusy(ARM_YAW)) {
             yaw_overlap_errors++;
-            if(arm_work_status.state==ARM_WORK_TRAY_LOADING ||
+            if((arm_work_status.state==ARM_WORK_TRAY_LOADING && !returning) ||
                arm_work_status.state==ARM_WORK_TRAY_UNLOADING) tray_yaw_overlap_errors++;
         }
         pulses=((uint32_t)f[6]<<24)|((uint32_t)f[7]<<16)|((uint32_t)f[8]<<8)|f[9];
@@ -208,6 +236,11 @@ static void step(uint32_t ms)
             }
         }
         ArmWork_Task();
+#if ARM_TRAY_ENABLED
+        if(load_yaw_at && !load_yaw_done_at && arm_work_status.state==ARM_WORK_TRAY_LOADING &&
+           !ArmCAN_AxisBusy(ARM_YAW) &&
+           ArmCAN_PositionWithinTolerance(ARM_YAW,ARM_TRAY_YAW_CDEG)) load_yaw_done_at=tick;
+#endif
     }
 }
 
@@ -382,7 +415,7 @@ static int grip_abort_case(uint32_t test)
     const uint16_t work=ROUTE_WORK_MATERIAL_1;
     const int32_t pickup_reach=test==111 ? -25000 : -9000;
     const uint8_t abort_while_lowering=(uint8_t)(test==112);
-    uint32_t id=2U,z_before,yaw_before,reach_before,closes_before,stops_before,overlap_before;
+    uint32_t id=2U,z_before,yaw_before,reach_before,closes_before,stops_before,overlap_before,yaw_overlaps_before;
     int32_t photo_z,lower_z;
 #if ARM_TRAY_ENABLED
     uint32_t pwm_before;
@@ -455,9 +488,10 @@ static int grip_abort_case(uint32_t test)
         yaw_preflight_rpm=4U;
     }
     overlap_before=linear_overlap_ticks;
+    yaw_overlaps_before=yaw_overlap_errors;
     CHECK(micro_command(id+3U,0,0,0)==ROUTE_OK && until(ARM_WORK_ALIGNED),1123);
     if(test==111) {
-        CHECK(!yaw_overlap_errors && !yaw_preflight_rpm,1135);
+        CHECK(yaw_overlap_errors==yaw_overlaps_before && !yaw_preflight_rpm,1135);
         CHECK(ARM_PARALLEL_RETRACT_ENABLE ? linear_ticks_at_yaw>overlap_before :
                                            linear_ticks_at_yaw==overlap_before,1136);
     }
@@ -468,7 +502,7 @@ static int grip_abort_case(uint32_t test)
     CHECK(claw_command(work,id+6U,4,id+4U)==ROUTE_OK,1127);
 #if ARM_TRAY_ENABLED
     reach_before=axis_moves[ARM_REACH];
-    CHECK(until(ARM_WORK_TRAY_LOADING) && axis_moves[ARM_REACH]==reach_before,1129);
+    CHECK(until(ARM_WORK_TRAY_LOADING) && axis_moves[ARM_REACH]==reach_before+1U,1129);
 #endif
     CHECK(until(ARM_WORK_PICKED),1127);
 #if ARM_TRAY_ENABLED
@@ -893,12 +927,14 @@ static uint8_t close_tray_station(uint32_t id)
 static int tray_case(uint32_t test)
 {
     const uint16_t destination=test==101 ? ROUTE_WORK_STORAGE_2 : ROUTE_WORK_PROCESSING_1;
+    const uint8_t test_load_timing=(uint8_t)(test==124 || test==125);
     const uint8_t slots[]={3U,1U,2U};
     const uint32_t compares[]={ARM_TRAY_FIRST_COMPARE,ARM_TRAY_SECOND_COMPARE,ARM_TRAY_THIRD_COMPARE};
     uint8_t i;
     uint32_t id=2U;
 
     CHECK(!tray_pwm_writes && home() && open_tray_station(1,ROUTE_WORK_MATERIAL_1),1000);
+    if(test_load_timing) arm_motor_config[ARM_YAW].rpm=test==124 ? 150U : 40U;
     CHECK((report_bytes[28]&16) && !report_bytes[30] && !tray_pwm_writes,1001);
     CHECK(tray_place_command(id,1,0,0,0)==ROUTE_BAD_STATE,1002);
     CHECK(tray_command(id,2,0,0,ARM_TRAY_YAW_CDEG,0,0)==ROUTE_BAD_VALUE,1044);
@@ -907,8 +943,10 @@ static int tray_case(uint32_t test)
     CHECK(!move_count && !tray_pwm_writes && arm_work_status.state==ARM_WORK_WAIT_VISION,1048);
     for(i=0U;i<3U;i++,id+=3U) {
         uint32_t reach_moves_before=axis_moves[ARM_REACH];
-        CHECK(claw_command(ROUTE_WORK_MATERIAL_1,id,2,0)==ROUTE_OK && until(ARM_WORK_ALIGNED),1003);
-        CHECK(axis_moves[ARM_REACH]==reach_moves_before+(i>0U),1046);
+        if(test_load_timing) CHECK(tray_command(id,2,0,0,1200,-4000,0)==ROUTE_OK,1003);
+        else CHECK(claw_command(ROUTE_WORK_MATERIAL_1,id,2,0)==ROUTE_OK,1003);
+        CHECK(until(ARM_WORK_ALIGNED),1003);
+        CHECK(axis_moves[ARM_REACH]==reach_moves_before+(i>0U || test_load_timing),1046);
         if(test==102) {
             arm_motor_config[ARM_YAW].max_cdeg=ARM_TRAY_YAW_CDEG-1;
             CHECK(claw_command(ROUTE_WORK_MATERIAL_1,id+1,3,id)==ROUTE_BAD_VALUE && !tray_pwm_writes,1004);
@@ -926,8 +964,17 @@ static int tray_case(uint32_t test)
             return 0;
         }
         CHECK(until(ARM_WORK_PICKED) && report_bytes[30]==i+1 && pwm_compare==ARM_CLAW_OPEN_COMPARE,1011);
-        CHECK(tray_pwm_writes==(i==0 ? 2U : 3U) && tray_pwm_starts==1U,1012);
+        CHECK(tray_pwm_writes==i+1U && tray_pwm_starts==1U,1012);
         CHECK(claw_command(ROUTE_WORK_MATERIAL_1,id+2,4,id)==ROUTE_OK && report_bytes[30]==i+1,1013);
+        if(test_load_timing) {
+            CHECK((load_yaw_done_at-load_yaw_at<ARM_TRAY_SETTLE_MS)==(test==124) &&
+                  load_reach_at>load_yaw_done_at && !tray_timing_errors,1240);
+            CHECK(load_return_moves==1U && !tray_yaw_overlap_errors && linear_overlap_ticks>0U &&
+                  ArmCAN_PositionWithinTolerance(ARM_Z,ARM_CLEAR_Z_CDEG) &&
+                  ArmCAN_PositionWithinTolerance(ARM_YAW,ARM_TRANSPORT_YAW_CDEG) &&
+                  ArmCAN_PositionWithinTolerance(ARM_REACH,ARM_CLEAR_REACH_CDEG),1241);
+            return 0;
+        }
         if((test==106 || test==107) && i==0U) {
             /* Second material after one tray load. Simulate 0.80/1.20 degrees of residual. */
             align_reach_feedback_counts=test==106 ? -12652 : -12576;

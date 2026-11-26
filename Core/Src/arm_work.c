@@ -24,10 +24,12 @@
 #define TRAY_CAPACITY 3U
 typedef enum {
     TRAY_PARK, TRAY_SELECT, TRAY_APPROACH, TRAY_GRIP, TRAY_MOVE_TO_SLOT,
-    TRAY_RELEASE, TRAY_ADVANCE, TRAY_COMPLETE
+    TRAY_RELEASE, TRAY_ADVANCE, TRAY_COMPLETE,
+    TRAY_LOAD_TURN, TRAY_LOAD_REACH, TRAY_LOAD_LOWER, TRAY_LOAD_LIFT, TRAY_LOAD_RETURN
 } TrayAction_t;
 static const TrayAction_t tray_load_actions[]={
-    TRAY_PARK,TRAY_SELECT,TRAY_APPROACH,TRAY_RELEASE,TRAY_PARK,TRAY_ADVANCE,TRAY_COMPLETE
+    TRAY_LOAD_TURN,TRAY_LOAD_REACH,TRAY_LOAD_LOWER,TRAY_RELEASE,
+    TRAY_LOAD_LIFT,TRAY_LOAD_RETURN,TRAY_COMPLETE
 };
 static const TrayAction_t tray_unload_actions[]={
     TRAY_PARK,TRAY_SELECT,TRAY_APPROACH,TRAY_GRIP,TRAY_MOVE_TO_SLOT,TRAY_RELEASE,
@@ -36,7 +38,7 @@ static const TrayAction_t tray_unload_actions[]={
 static const TrayAction_t *tray_actions;
 static uint8_t tray_step, tray_count, tray_head, tray_index, tray_pwm_started;
 static uint8_t tray_waiting, tray_uncertain, claw_holding, destination_slot, destination_mask;
-static uint32_t tray_wait_at;
+static uint32_t tray_wait_at, tray_index_at, tray_turn_tx_before;
 static int32_t destination_pose[3];
 static uint8_t placed_slots[TRAY_CAPACITY], placed_count, reloaded_count;
 #endif
@@ -59,7 +61,7 @@ static ArmPlanStep_t plan_steps[5];
 static int32_t aligned_z;
 static uint32_t plan_done_state, claw_closed_at;
 static uint8_t grip_abort_pending;
-enum {ALIGN_YAW_CLEARANCE, ALIGN_YAW_MICRO, ALIGN_YAW_MATERIAL};
+enum {ALIGN_YAW_CLEARANCE, ALIGN_YAW_MICRO, ALIGN_YAW_MATERIAL, ALIGN_YAW_TRAY_RETURN};
 static uint8_t plan_align_yaw;
 static uint16_t event_sequence;
 
@@ -416,23 +418,42 @@ static void tray_wait(void)
     tray_wait_at=HAL_GetTick();
     tray_waiting=1U;
 }
-static void tray_select(uint8_t index)
+static uint8_t tray_set_index(uint8_t index)
 {
     const uint16_t compare[TRAY_CAPACITY]={ARM_TRAY_FIRST_COMPARE,ARM_TRAY_SECOND_COMPARE,ARM_TRAY_THIRD_COMPARE};
+    __HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2,compare[index]);
+    if(!tray_pwm_started && HAL_TIM_PWM_Start(&htim3,TIM_CHANNEL_2)!=HAL_OK) {
+        fail(ARM_WORK_TRAY_PWM,255U);return 0U;
+    }
+    tray_pwm_started=1U;
+    tray_index=index;
+    tray_index_at=HAL_GetTick();
+    return 1U;
+}
+static void tray_select(uint8_t index)
+{
     if(tray_index==index) {tray_step++;return;}
-    /* Rotate only after all three axes have reached the transport pose. */
+    /* Unloading rotates the tray from the transport pose. */
     if(!ArmCAN_PositionWithinTolerance(ARM_Z,ARM_CLEAR_Z_CDEG) ||
        !ArmCAN_PositionWithinTolerance(ARM_YAW,ARM_TRANSPORT_YAW_CDEG) ||
        !ArmCAN_PositionWithinTolerance(ARM_REACH,ARM_CLEAR_REACH_CDEG)) {
         fail(ARM_WORK_POSE,255U);return;
     }
-    __HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2,compare[index]);
-    if(!tray_pwm_started && HAL_TIM_PWM_Start(&htim3,TIM_CHANNEL_2)!=HAL_OK) {
-        fail(ARM_WORK_TRAY_PWM,255U);return;
-    }
-    tray_pwm_started=1U;
-    tray_index=index;
-    tray_wait();
+    if(tray_set_index(index)) tray_wait();
+}
+static void tray_load_move(uint8_t axis,int32_t target)
+{
+    start_plan(ARM_WORK_TRAY_LOADING);
+    plan_axis(axis,target);
+    arm_work_status.target_cdeg[axis]=target;
+}
+static uint8_t tray_return_yaw_ok(void)
+{
+    return arm_work_status.state==ARM_WORK_TRAY_LOADING && clearance_ok() &&
+        pose_ok(ARM_YAW,ARM_TRANSPORT_YAW_CDEG) &&
+        ArmCAN_PositionWithinTolerance(ARM_Z,ARM_CLEAR_Z_CDEG) &&
+        ArmCAN_PositionWithinTolerance(ARM_YAW,ARM_TRAY_YAW_CDEG) &&
+        ArmCAN_PositionWithinTolerance(ARM_REACH,ARM_TRAY_REACH_CDEG);
 }
 static void tray_task(void)
 {
@@ -440,8 +461,9 @@ static void tray_task(void)
     uint8_t loading=(uint8_t)(arm_work_status.state==ARM_WORK_TRAY_LOADING);
     uint32_t wait_ms;
     if(tray_waiting) {
-        wait_ms=action==TRAY_GRIP ? ARM_CLAW_CLOSE_MS :
-            (action==TRAY_RELEASE ? ARM_CLAW_RELEASE_MS : ARM_TRAY_SETTLE_MS);
+        wait_ms=ARM_TRAY_SETTLE_MS;
+        if(action==TRAY_GRIP) wait_ms=ARM_CLAW_CLOSE_MS;
+        else if(action==TRAY_RELEASE) wait_ms=loading ? ARM_CLAW_RELEASE_MS : ARM_TRAY_UNLOAD_RELEASE_MS;
         if((uint32_t)(HAL_GetTick()-tray_wait_at)<wait_ms) return;
         if(action==TRAY_RELEASE) {
             if(loading) {
@@ -457,12 +479,35 @@ static void tray_task(void)
         tray_waiting=0U;tray_step++;return;
     }
     switch(action) {
+    case TRAY_LOAD_TURN:
+        tray_turn_tx_before=arm_can_diag[ARM_YAW].tx_completed;
+        tray_load_move(ARM_YAW,ARM_TRAY_YAW_CDEG);
+        break;
+    case TRAY_LOAD_REACH:
+        if(tray_index!=tray_slot_at_tail()) {fail(ARM_WORK_TRAY_PWM,255U);return;}
+        if((uint32_t)(HAL_GetTick()-tray_index_at)<ARM_TRAY_SETTLE_MS) return;
+        tray_load_move(ARM_REACH,ARM_TRAY_REACH_CDEG);
+        break;
+    case TRAY_LOAD_LOWER:
+        tray_load_move(ARM_Z,ARM_TRAY_PLACE_Z_CDEG);
+        break;
+    case TRAY_LOAD_LIFT:
+        tray_load_move(ARM_Z,ARM_CLEAR_Z_CDEG);
+        break;
+    case TRAY_LOAD_RETURN: {
+        const int32_t pose[ARM_AXIS_COUNT]={ARM_CLEAR_Z_CDEG,ARM_TRANSPORT_YAW_CDEG,ARM_CLEAR_REACH_CDEG};
+        start_plan(ARM_WORK_TRAY_LOADING);
+        plan_pose_axes(AXIS_BIT(ARM_YAW)|AXIS_BIT(ARM_REACH),pose);
+        plan_align_yaw=ALIGN_YAW_TRAY_RETURN;
+        arm_work_status.target_cdeg[ARM_YAW]=pose[ARM_YAW];
+        arm_work_status.target_cdeg[ARM_REACH]=pose[ARM_REACH];
+        break;
+    }
     case TRAY_PARK:
         if(!transport_plan(arm_work_status.state)) {fail(ARM_WORK_POSE,255U);return;}
         break;
     case TRAY_APPROACH: {
-        int32_t pose[3]={loading ? ARM_TRAY_PLACE_Z_CDEG : ARM_TRAY_PICK_Z_CDEG,
-                        ARM_TRAY_YAW_CDEG,ARM_TRAY_REACH_CDEG};
+        int32_t pose[3]={ARM_TRAY_PICK_Z_CDEG,ARM_TRAY_YAW_CDEG,ARM_TRAY_REACH_CDEG};
         /* Stay at the upper clearance height during the final reach into the tray. */
         if(!full_pose_plan(pose,arm_work_status.state,0U)) {fail(ARM_WORK_POSE,255U);return;}
         break;
@@ -471,10 +516,9 @@ static void tray_task(void)
         if(!pose_plan(destination_pose,arm_work_status.state)) {fail(ARM_WORK_POSE,255U);return;}
         break;
     case TRAY_SELECT:
-        tray_select(loading ? tray_slot_at_tail() : tray_head);return;
+        tray_select(tray_head);return;
     case TRAY_ADVANCE:
-        if(loading && tray_count<TRAY_CAPACITY) {tray_select(tray_slot_at_tail());return;}
-        if(!loading && !tray_count) {tray_select(0U);return;}
+        if(!tray_count) {tray_select(0U);return;}
         break;
     case TRAY_GRIP:
         claw_close();tray_wait();return;
@@ -492,13 +536,13 @@ static void lift_after_grip(void)
 {
     start_plan(ARM_WORK_PICKED);
 #if ARM_TRAY_ENABLED
-    if(parallel_retract_ok() && aligned_z>=ARM_PARALLEL_RETRACT_MIN_Z_CDEG) {
-        plan_linear_axes(aligned_z,ARM_CLEAR_REACH_CDEG);
-        arm_work_status.target_cdeg[ARM_REACH]=ARM_CLEAR_REACH_CDEG;
-    } else
-#endif
+    plan_linear_axes(ARM_CLEAR_Z_CDEG,ARM_CLEAR_REACH_CDEG);
+    arm_work_status.target_cdeg[ARM_Z]=ARM_CLEAR_Z_CDEG;
+    arm_work_status.target_cdeg[ARM_REACH]=ARM_CLEAR_REACH_CDEG;
+#else
     plan_axis(ARM_Z,aligned_z);
     arm_work_status.target_cdeg[ARM_Z]=aligned_z;
+#endif
     state(ARM_WORK_LIFTING);
 }
 
@@ -920,6 +964,17 @@ void ArmWork_Task(void)
         (uint32_t)(HAL_GetTick() - claw_closed_at) < ARM_CLAW_CLOSE_MS) return;
     if(moving) {
         uint8_t busy=0U;
+#if ARM_TRAY_ENABLED
+        /* Start the PWM in the same task pass that transmits the outbound yaw move. */
+        if(tray_actions==tray_load_actions && tray_actions[tray_step]==TRAY_LOAD_REACH &&
+           tray_index!=tray_slot_at_tail() && arm_can_diag[ARM_YAW].tx_completed!=tray_turn_tx_before &&
+           arm_can_diag[ARM_YAW].tx_raw[1]==0xFDU && arm_can_diag[ARM_YAW].last_hal_status==(uint32_t)HAL_OK) {
+            if(!ArmCAN_PositionWithinTolerance(ARM_Z,ARM_CLEAR_Z_CDEG) || !yaw_clear_now()) {
+                fail(ARM_WORK_POSE,ARM_YAW);return;
+            }
+            if(!tray_set_index(tray_slot_at_tail())) return;
+        }
+#endif
         step=&plan_steps[plan_index];
         for(axis=0U;axis<ARM_AXIS_COUNT;axis++) {
             if(!(step->axis_mask & AXIS_BIT(axis))) continue;
@@ -940,11 +995,15 @@ void ArmWork_Task(void)
         if(!(step->axis_mask & AXIS_BIT(axis))) continue;
         if(arm_work_status.active_axis==255U) arm_work_status.active_axis=axis;
         if(axis==ARM_YAW) {
-            uint8_t allowed=plan_align_yaw==ALIGN_YAW_CLEARANCE ? yaw_clear_now() :
-                direct_align_yaw_ok(step->target[axis],plan_align_yaw,0U);
+            uint8_t allowed;
 #if ARM_TRAY_ENABLED
-            if(tray_actions && !ArmCAN_PositionWithinTolerance(ARM_Z,ARM_CLEAR_Z_CDEG)) allowed=0U;
+            if(plan_align_yaw==ALIGN_YAW_TRAY_RETURN)
+                allowed=step->target[axis]==ARM_TRANSPORT_YAW_CDEG && tray_return_yaw_ok();
+            else if(tray_actions && !ArmCAN_PositionWithinTolerance(ARM_Z,ARM_CLEAR_Z_CDEG)) allowed=0U;
+            else
 #endif
+            allowed=plan_align_yaw==ALIGN_YAW_CLEARANCE ? yaw_clear_now() :
+                direct_align_yaw_ok(step->target[axis],plan_align_yaw,0U);
             if(!allowed) {fail(ARM_WORK_POSE,axis);return;}
         }
         if(axis==ARM_REACH && arm_work_status.state==ARM_WORK_ALIGNING &&
