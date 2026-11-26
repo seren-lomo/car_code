@@ -87,6 +87,7 @@ RouteResult_t Route_RequestStartArea(uint8_t area)
 
 static uint32_t yaw_clearance_violations;
 static uint32_t linear_overlap_ticks,linear_ticks_at_yaw,yaw_overlap_errors;
+static uint32_t yaw_reach_overlap_ticks,three_axis_ticks,tray_yaw_overlap_errors;
 static uint8_t yaw_preflight_rpm;
 static uint8_t reproduce_reach_clearance, drift_after_clearance;
 static int32_t align_reach_feedback_counts;
@@ -134,10 +135,18 @@ void can_SendCmd(volatile uint8_t *f,uint8_t n)
                 32768U/ARM_PULSES_PER_REV+1U);
             if(error<0)error=-error;
             if(z<ARM_YAW_MIN_Z_CDEG || error>tolerance)yaw_clearance_violations++;
-            if(ArmCAN_AxisBusy(ARM_Z) || ArmCAN_AxisBusy(ARM_REACH)) yaw_overlap_errors++;
+            if(ArmCAN_AxisBusy(ARM_Z) || ArmCAN_AxisBusy(ARM_REACH)) {
+                yaw_overlap_errors++;
+                if(arm_work_status.state==ARM_WORK_TRAY_LOADING ||
+                   arm_work_status.state==ARM_WORK_TRAY_UNLOADING) tray_yaw_overlap_errors++;
+            }
             linear_ticks_at_yaw=linear_overlap_ticks;
             yaw_preflight_rpm=0U;
-        } else if(ArmCAN_AxisBusy(ARM_YAW)) yaw_overlap_errors++;
+        } else if(ArmCAN_AxisBusy(ARM_YAW)) {
+            yaw_overlap_errors++;
+            if(arm_work_status.state==ARM_WORK_TRAY_LOADING ||
+               arm_work_status.state==ARM_WORK_TRAY_UNLOADING) tray_yaw_overlap_errors++;
+        }
         pulses=((uint32_t)f[6]<<24)|((uint32_t)f[7]<<16)|((uint32_t)f[8]<<8)|f[9];
         rpm=((uint32_t)f[3]<<8)|f[4];
         motion_counts_per_tick[i]=(int32_t)((rpm*65536U+59999U)/60000U);
@@ -182,6 +191,10 @@ static void step(uint32_t ms)
             }
         }
         if(moving[ARM_Z] && moving[ARM_REACH]) linear_overlap_ticks++;
+        if(moving[ARM_YAW] && moving[ARM_REACH]) {
+            yaw_reach_overlap_ticks++;
+            if(moving[ARM_Z]) three_axis_ticks++;
+        }
         RouteKeys_Task();
         if(drift_after_clearance && ArmCAN_AxisBusy(ARM_REACH)) {
             ArmCAN_Task();
@@ -487,7 +500,7 @@ static int parallel_work_case(uint32_t test)
     }
     for(elapsed=0U;elapsed<10000U && !linear_overlap_ticks;elapsed++) step(1);
     CHECK(arm_work_status.state==ARM_WORK_ALIGNING && arm_work_status.active_axis==ARM_Z &&
-          linear_overlap_ticks && !yaw_overlap_errors,1145);
+          linear_overlap_ticks && (test==113 ? three_axis_ticks>0U : !yaw_overlap_errors),1145);
     if(test==115) {
         drop_address=7U;drop_function=0x36;
         CHECK(until(ARM_WORK_FAULT),1146);
@@ -499,7 +512,98 @@ static int parallel_work_case(uint32_t test)
     }
     CHECK(until(ARM_WORK_ALIGNED) && arm_work_status.aligned_command_id==id &&
           linear_ticks_at_yaw<linear_overlap_ticks && axis_moves[ARM_YAW]==1U &&
-          !yaw_overlap_errors && !stop_count,1148);
+          (test==113 ? three_axis_ticks>0U : !yaw_overlap_errors) && !stop_count,1148);
+    return 0;
+}
+
+static RouteResult_t align_pick_command(uint32_t id,uint8_t mode,int32_t z,int32_t yaw,int32_t reach,uint32_t ref)
+{
+    uint8_t i;
+    for(i=0U;i<32U;i++) packet[i]=0U;
+    put32(packet,arm_work_status.route_id);
+    put16(packet+4,arm_work_status.point_index);
+    put16(packet+6,arm_work_status.work_id);
+    put32(packet+8,id);
+    packet[12]=10U;packet[13]=mode;
+    put32(packet+16,(uint32_t)z);put32(packet+20,(uint32_t)yaw);put32(packet+24,(uint32_t)reach);
+    put32(packet+28,ref);
+    return Route_OnAuxCommand(0x31,packet,32);
+}
+
+static int align_pick_case(uint32_t test)
+{
+    const uint16_t work=ROUTE_WORK_MATERIAL_1;
+    const uint8_t automatic=(uint8_t)(test==119);
+    const int32_t z=test==122 ? 0 : -44000;
+    const int32_t yaw=test==122 ? 0 : 2000;
+    const int32_t reach=test==122 ? 0 : (test==123 ? -25000 : -12000);
+    uint32_t id=2U,elapsed,moves_before;
+
+    CHECK(home(),1170);
+#if ARM_VISION_TEST_MODE
+    CHECK(test_command(1,work,1,6,0,0,0,0)==ROUTE_OK,1171);
+#else
+    CHECK(station(work),1171);
+#endif
+    if(test==120) {
+        CHECK(micro_command(id++,ARM_ALIGN_MICRO_MIN_Z_CDEG-900,0,-3000)==ROUTE_OK &&
+              until(ARM_WORK_ALIGNED),1172);
+    }
+    CHECK(align_pick_command(id,2U,z,yaw,reach,0)==ROUTE_BAD_VALUE,1173);
+    CHECK(align_pick_command(id,automatic,z,yaw,reach,id)==ROUTE_BAD_VALUE,1174);
+#if !ARM_TRAY_ENABLED
+    if(automatic) {
+        CHECK(align_pick_command(id,automatic,z,yaw,reach,0)==ROUTE_BAD_STATE && !pwm_close_count,1175);
+        return 0;
+    }
+#endif
+    moves_before=move_count;
+    CHECK(align_pick_command(id,automatic,z,yaw,reach,0)==ROUTE_OK &&
+          arm_work_status.aligned_command_id==id,1176);
+    CHECK(align_pick_command(id,automatic,z,yaw,reach,0)==ROUTE_OK,1177);
+    if(test==120) {
+        step(1);
+        CHECK(ArmCAN_AxisBusy(ARM_Z) && !ArmCAN_AxisBusy(ARM_YAW) && !ArmCAN_AxisBusy(ARM_REACH),1178);
+    } else if(test!=122 && test!=123) {
+        for(elapsed=0U;elapsed<1000U && !three_axis_ticks;elapsed++) step(1);
+        CHECK(three_axis_ticks && arm_work_status.state==ARM_WORK_ALIGNING && !pwm_close_count &&
+              pwm_compare==ARM_CLAW_OPEN_COMPARE && move_count==moves_before+3U,1179);
+        if(test==121) {
+            drop_address=7U;drop_function=0x36;
+            CHECK(until(ARM_WORK_FAULT),1180);
+            CHECK(arm_work_status.fault==ARM_WORK_MOTOR && arm_work_status.active_axis==ARM_REACH &&
+                  arm_motor_status[ARM_Z].state==ARM_MOTOR_STOPPED &&
+                  arm_motor_status[ARM_YAW].state==ARM_MOTOR_STOPPED && !pwm_close_count,1181);
+            CHECK(!moving[ARM_Z] && !moving[ARM_YAW] && !moving[ARM_REACH],1182);
+            return 0;
+        }
+    }
+    CHECK(until(automatic ? ARM_WORK_LIFTING : ARM_WORK_WAIT_GRIP),1183);
+    CHECK(pwm_close_count==1U && pwm_compare==ARM_CLAW_CLOSED_COMPARE && !ArmCAN_Busy() &&
+          ArmCAN_PositionWithinTolerance(ARM_Z,z) && ArmCAN_PositionWithinTolerance(ARM_YAW,yaw) &&
+          ArmCAN_PositionWithinCustomTolerance(ARM_REACH,reach,ARM_ALIGN_REACH_TOLERANCE_CDEG),1184);
+    if(test==120 || test==123) CHECK(!three_axis_ticks && !yaw_overlap_errors,1185);
+    if(test==122) CHECK(move_count==moves_before,1186);
+    if(test==118 || test==120 || test==122 || test==123) {
+        CHECK(claw_command(work,id+1U,9,id)==ROUTE_OK && until(ARM_WORK_WAIT_VISION) &&
+              pwm_compare==ARM_CLAW_OPEN_COMPARE && ArmCAN_PositionWithinTolerance(ARM_Z,ARM_CLEAR_Z_CDEG),
+              1187);
+        CHECK(!report_bytes[30] && !stop_count,1188);
+        return 0;
+    }
+    moves_before=move_count;
+    if(!automatic) CHECK(claw_command(work,id+1U,4,id)==ROUTE_OK,1189);
+    step(ARM_CLAW_CLOSE_MS-1U);
+    CHECK(move_count==moves_before && arm_work_status.state==ARM_WORK_LIFTING,1190);
+    CHECK(until(ARM_WORK_PICKED) && ArmCAN_PositionWithinTolerance(ARM_Z,ARM_CLEAR_Z_CDEG),1191);
+#if ARM_TRAY_ENABLED
+    CHECK(report_bytes[30]==1U && !tray_yaw_overlap_errors && !tray_timing_errors,1192);
+    if(automatic) {
+        CHECK(align_pick_command(id,automatic,z,yaw,reach,0)==ROUTE_OK,1193);
+        step(ARM_CLAW_CLOSE_MS);
+        CHECK(arm_work_status.state==ARM_WORK_PICKED && report_bytes[30]==1U && pwm_close_count==1U,1194);
+    }
+#endif
     return 0;
 }
 
@@ -653,12 +757,9 @@ static int micro_case(uint32_t test)
         const int32_t targets[6][2]={{1355,-7138},{1356,-7185},{1677,-6743},{2092,-9530},
             {13500,-9530},{-13500,-9530}};
         const int32_t *target=targets[test>=103?test-100U:test-94U];
-        uint32_t elapsed;
         CHECK(micro_command(2,0,target[0],target[1])==ROUTE_OK,940);
-        for(elapsed=0U;elapsed<1000U && move_count==before;elapsed++) step(1);
-        CHECK(move_count==before+1 && axis_moves[ARM_REACH]==reach_before+1 &&
-              axis_moves[ARM_YAW]==yaw_before,941);
         CHECK(until(ARM_WORK_ALIGNED) && arm_work_status.aligned_command_id==2U,942);
+        CHECK(yaw_reach_overlap_ticks>0U,941);
         CHECK(move_count==before+2 && axis_moves[ARM_Z]==z_before &&
               axis_moves[ARM_REACH]==reach_before+1 && axis_moves[ARM_YAW]==yaw_before+1,943);
         CHECK(ArmCAN_PositionWithinTolerance(ARM_REACH,target[1]) &&
@@ -677,19 +778,17 @@ static int micro_case(uint32_t test)
         CHECK(move_count==before && arm_work_status.aligned_command_id==2U &&
               arm_work_status.state==ARM_WORK_ALIGNED,972);
     } else if(test==98) {
-        uint32_t elapsed;
+        uint32_t overlap_before;
         CHECK(micro_command(7,0,1695,-6777)==ROUTE_OK && until(ARM_WORK_ALIGNED),980);
         /* Reproduce the reported +1 cdeg top-height feedback after alignment. */
         pos[ARM_Z]=target[ARM_Z]=arm_motor_status[ARM_Z].origin_counts+2;
         arm_motor_status[ARM_Z].position_counts=pos[ARM_Z];
         arm_motor_status[ARM_Z].position_cdeg=1;
         before=move_count;
-        reach_before=axis_moves[ARM_REACH];yaw_before=axis_moves[ARM_YAW];
+        overlap_before=yaw_reach_overlap_ticks;
         CHECK(micro_command(8,0,2952,-9246)==ROUTE_OK,981);
-        for(elapsed=0U;elapsed<1000U && move_count==before;elapsed++) step(1);
-        CHECK(move_count==before+1 && axis_moves[ARM_REACH]==reach_before+1 &&
-              axis_moves[ARM_YAW]==yaw_before,982);
         CHECK(until(ARM_WORK_ALIGNED) && arm_work_status.aligned_command_id==8U,983);
+        CHECK(yaw_reach_overlap_ticks>overlap_before,982);
         CHECK(move_count==before+2 && ArmCAN_PositionWithinTolerance(ARM_REACH,-9246) &&
               ArmCAN_PositionWithinTolerance(ARM_YAW,2952),984);
         CHECK(micro_command(9,0,ARM_MATERIAL_ALIGN_YAW_LIMIT_CDEG+1,-10000)==ROUTE_BAD_VALUE,985);
@@ -858,6 +957,7 @@ static int tray_case(uint32_t test)
         }
     }
     for(i=0U;i<3U;i++) CHECK(tray_pwm_log[i]==compares[i],1014);
+    CHECK(align_pick_command(id,0,0,0,0,0)==ROUTE_BAD_STATE,1018);
     CHECK(claw_command(ROUTE_WORK_MATERIAL_1,id,2,0)==ROUTE_OK && until(ARM_WORK_ALIGNED),1015);
     CHECK(claw_command(ROUTE_WORK_MATERIAL_1,id+1,3,id)==ROUTE_BAD_STATE,1016);
     CHECK(close_tray_station(id+1),1017);
@@ -895,7 +995,7 @@ static int tray_case(uint32_t test)
         }
         CHECK(close_tray_station(5),1042);
     } else CHECK(close_tray_station(5),1043);
-    CHECK(!tray_timing_errors && !pwm_bad_channel && !yaw_clearance_violations,1030);
+    CHECK(!tray_timing_errors && !pwm_bad_channel && !yaw_clearance_violations && !tray_yaw_overlap_errors,1030);
     return 0;
 }
 #endif
@@ -907,6 +1007,7 @@ int run_case(uint32_t test)
     for(i=0;i<3;i++){pos[i]=1000*(i+1);target[i]=pos[i];}
     if(test>=110 && test<=112) return grip_abort_case(test);
     if(test>=113 && test<=116) return parallel_work_case(test);
+    if(test>=117 && test<=123) return align_pick_case(test);
     if((test>=103 && test<=105) || test==108 || test==109) return micro_case(test);
     if(test==99) {
         uint16_t report_flags;

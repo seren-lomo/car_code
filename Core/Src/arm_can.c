@@ -28,14 +28,18 @@ typedef struct {
 static Port ports[ARM_AXIS_COUNT];
 
 static int64_t magnitude(int64_t v) { return v<0 ? -v : v; }
-static uint8_t other_linear_axis(uint8_t i)
-{ return i==ARM_Z ? ARM_REACH : ARM_Z; }
 static void fail(uint8_t i, uint32_t fault)
 {
     Port *p=&ports[i];
     uint8_t probe=(uint8_t)(p->operation==3U);
-    uint8_t parallel=(uint8_t)(p->operation==2U && i!=ARM_YAW &&
-        ports[other_linear_axis(i)].operation==2U);
+    uint8_t other;
+    uint8_t parallel=0U;
+    for(other=0U;other<ARM_AXIS_COUNT;other++) {
+        if(other!=i && ports[other].operation==2U) {
+            parallel=1U;
+            break;
+        }
+    }
     arm_can_diag[i].fault_code=(uint8_t)fault;
     arm_can_diag[i].fault_stage=p->stage;
     arm_can_diag[i].fault_function=p->expected;
@@ -225,12 +229,7 @@ static uint8_t begin(uint8_t i, uint8_t operation)
 {
     Port *p;
     if(i>=ARM_AXIS_COUNT) return 0U;
-    if(operation==2U && i!=ARM_YAW) {
-        uint8_t other=other_linear_axis(i);
-        if(ArmCAN_AxisBusy(i) || ArmCAN_AxisBusy(ARM_YAW)) return 0U;
-        /* An origin record, probe or pending stop on the other axis is exclusive. */
-        if(ArmCAN_AxisBusy(other) && ports[other].operation!=2U) return 0U;
-    } else if(ArmCAN_Busy()) return 0U;
+    if(operation==2U ? ArmCAN_AxisBusy(i) : ArmCAN_Busy()) return 0U;
     p=&ports[i];
     /* On a shared bus these addresses must never overlap chassis 1..4. */
     if(arm_motor_status[i].address<5U || arm_motor_status[i].address>7U) return 0U;

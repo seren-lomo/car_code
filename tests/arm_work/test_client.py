@@ -50,16 +50,17 @@ class FakeSerial:
             return len(packet)
         kind, sequence, body = P.Decoder().feed(packet)[0]
         if kind == P.ARM_COMMAND:
-            rid, index, work, self.command, opcode, _, _, _, _, _, ref = struct.unpack('<IHHIBBHiiiI', body)
+            rid, index, work, self.command, opcode, mode, _, _, _, _, ref = struct.unpack('<IHHIBBHiiiI', body)
             if opcode == 6:
                 self.context = (rid, index, work)
                 self.aligned = 0
             self.actions.append(opcode)
-            if opcode == 2:
+            if opcode in (2, 10):
                 self.aligned = self.command
-            if opcode in (3, 4, 8):
+            if opcode in (3, 4, 8, 9):
                 assert ref == self.aligned
-            self.arm_state = {1: 2, 2: 6, 3: 8, 4: 10, 5: 12, 6: 4, 7: 19, 8: 8}[opcode]
+            self.arm_state = {1: 2, 2: 6, 3: 8, 4: 10, 5: 12, 6: 4, 7: 19, 8: 8, 9: 4,
+                              10: 9 if mode else 8}[opcode]
         if kind in (P.ARM_STATUS, P.ARM_COMMAND) and self.include_arm:
             self.data += P.frame(P.ARM_EVENT, 77, arm_body(
                 self.arm_state, self.command, self.aligned, self.context, self.test_mode))
@@ -68,6 +69,24 @@ class FakeSerial:
 
 
 class ClientTests(unittest.TestCase):
+    def test_align_pick_wire_modes_and_abort_reference(self):
+        serial = FakeSerial()
+        client = P.Client(serial)
+        client.arm_align_pick(99, 2, 102, 10, -440, 20, -120)
+        self.assertEqual(serial.arm_state, 8)
+        client.arm_grip_abort(99, 2, 102, 11, 10)
+        self.assertEqual(serial.arm_state, 4)
+        client.arm_align_pick(99, 2, 102, 12, -440, 20, -120, auto_load=True)
+        self.assertEqual(serial.arm_state, 9)
+        bodies = [P.Decoder().feed(packet)[0][2] for packet in serial.writes]
+        self.assertEqual([len(body) for body in bodies], [32, 32, 32])
+        self.assertEqual([body[12:16] for body in bodies],
+                         [bytes((10, 0, 0, 0)), bytes((9, 0, 0, 0)), bytes((10, 1, 0, 0))])
+        self.assertEqual(struct.unpack_from('<iiiI', bodies[0], 16), (-44000, 2000, -12000, 0))
+        self.assertEqual(struct.unpack_from('<I', bodies[1], 28)[0], 10)
+        with self.assertRaises(ValueError):
+            P.arm_command_payload(99, 2, 102, 13, 10, reference_id=12)
+
     def test_standalone_session_without_a_running_route(self):
         serial = FakeSerial()
         serial.test_mode = True

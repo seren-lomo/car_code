@@ -132,16 +132,22 @@ def start_area_payload(payload):
 
 
 def arm_command_payload(route_id, point_index, work_id, command_id, opcode,
-                        z_deg=0, yaw_deg=0, reach_deg=0, reference_id=0, destination_slot=0):
+                        z_deg=0, yaw_deg=0, reach_deg=0, reference_id=0, destination_slot=0, *,
+                        auto_load=False):
     """Absolute motor-shaft angles from the recorded manual pose."""
     slot = integer(destination_slot, 1, 3, 'destination_slot') if opcode in (7, 8) else integer(
         destination_slot, 0, 0, 'destination_slot')
+    if not isinstance(auto_load, bool) or (auto_load and opcode != 10):
+        raise ValueError('auto_load requires ALIGN_PICK')
+    if opcode == 10:
+        integer(reference_id, 0, 0, 'reference_id')
+        slot = int(auto_load)
     return struct.pack('<IHHIBBHiiiI',
                        integer(route_id, 0, 0xffffffff, 'route_id'),
                        integer(point_index, 0, 65535, 'point_index'),
                        integer(work_id, 0, 65535, 'work_id'),
                        integer(command_id, 1, 0xffffffff, 'command_id'),
-                       integer(opcode, 1, 8, 'opcode'), slot, 0,
+                       integer(opcode, 1, 10, 'opcode'), slot, 0,
                        scaled(z_deg, 100, 21474836, 'z_deg'),
                        scaled(yaw_deg, 100, 21474836, 'yaw_deg'),
                        scaled(reach_deg, 100, 21474836, 'reach_deg'),
@@ -310,11 +316,12 @@ class Client:
         return self.request(VISION, payload)
 
     def arm_command(self, route_id, point_index, work_id, command_id, opcode,
-                    z_deg=0, yaw_deg=0, reach_deg=0, reference_id=0, destination_slot=0):
+                    z_deg=0, yaw_deg=0, reach_deg=0, reference_id=0, destination_slot=0, *,
+                    auto_load=False):
         """ACK means accepted, not motion complete. Wait for the ARM state too."""
         return self.request(ARM_COMMAND, arm_command_payload(
             route_id, point_index, work_id, command_id, opcode,
-            z_deg, yaw_deg, reach_deg, reference_id, destination_slot))
+            z_deg, yaw_deg, reach_deg, reference_id, destination_slot, auto_load=auto_load))
 
     def arm_zero(self, command_id):
         """Record the manually positioned pose; this is NOT automatic homing."""
@@ -330,6 +337,12 @@ class Client:
         return self.arm_command(route_id, point_index, work_id, command_id, 2,
                                 z_deg, yaw_deg, reach_deg)
 
+    def arm_align_pick(self, route_id, point_index, work_id, command_id, z_deg, yaw_deg, reach_deg, *,
+                       auto_load=False):
+        """Close at the absolute grasp pose, or auto-load if requested."""
+        return self.arm_command(route_id, point_index, work_id, command_id, 10,
+                                z_deg, yaw_deg, reach_deg, auto_load=auto_load)
+
     def arm_pick(self, route_id, point_index, work_id, command_id, aligned_command_id):
         return self.arm_command(route_id, point_index, work_id, command_id, 3,
                                 reference_id=aligned_command_id)
@@ -337,6 +350,10 @@ class Client:
     def arm_grip_done(self, route_id, point_index, work_id, command_id, aligned_command_id):
         """Only after the external claw operation actually completed."""
         return self.arm_command(route_id, point_index, work_id, command_id, 4,
+                                reference_id=aligned_command_id)
+
+    def arm_grip_abort(self, route_id, point_index, work_id, command_id, aligned_command_id):
+        return self.arm_command(route_id, point_index, work_id, command_id, 9,
                                 reference_id=aligned_command_id)
 
     def arm_finish(self, route_id, point_index, work_id, command_id):
