@@ -37,7 +37,7 @@
 /* Placeholder pick stroke: 90 MOTOR degrees. Set sign and stroke after
  * measuring the Z belt. It is an offset from the visually aligned Z pose.
  */
-#define ARM_PICK_DROP_CDEG       77450L /* 100 mm down at 40 mm/motor turn */
+#define ARM_PICK_DROP_CDEG       59450L /* 100 mm down at 40 mm/motor turn *///1mm 900×¥È¡ÏÂ½µ¾àÀë
 #define ARM_Z_DOWN_SIGN         (-1L) /* measured: negative Z goes down */
 
 /* PA6 / TIM3_CH1: 10 us per count with a 20 ms period. */

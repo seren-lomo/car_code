@@ -1,0 +1,79 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file    can.h
+  * @brief   This file contains all the function prototypes for
+  *          the can.c file
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2026 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Define to prevent recursive inclusion -------------------------------------*/
+#ifndef __CAN_H__
+#define __CAN_H__
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+
+/* USER CODE BEGIN Includes */
+#include "stdbool.h"
+/* USER CODE END Includes */
+
+extern CAN_HandleTypeDef hcan;
+
+/* USER CODE BEGIN Private defines */
+void can_SendCmd(__IO uint8_t *cmd, uint8_t len);
+uint8_t can_GetRxFlag(void);
+void USER_CAN1_Filter_Init(void);
+extern volatile HAL_StatusTypeDef can_last_tx_status;
+extern volatile uint32_t can_tx_error_count;
+typedef struct {
+    uint32_t ack_count;
+    uint32_t flags_count;
+    uint32_t flags_tick;
+    uint32_t speed_tick;
+    uint32_t speed_count;
+    uint32_t position_count;
+    uint32_t position_tick;
+    uint8_t ack_function;
+    uint8_t ack_status;
+    uint8_t flags;
+    int16_t speed_rpm;
+    int32_t position; /* EMM signed position: 65536 counts per motor turn. */
+} MotorFeedback_t;
+/* Indexed by CAN address 1..7, element 0 unused. */
+extern volatile MotorFeedback_t motor_feedback[8];
+/* USER CODE END Private defines */
+
+void MX_CAN_Init(void);
+
+/* USER CODE BEGIN Prototypes */
+typedef struct {
+	__IO CAN_RxHeaderTypeDef CAN_RxMsg;
+	__IO CAN_TxHeaderTypeDef CAN_TxMsg;
+	__IO uint8_t rxData[32];
+	__IO uint8_t txData[32];
+	__IO bool rxFrameFlag;
+}CAN_t;
+extern __IO CAN_t can;
+/* USER CODE END Prototypes */
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __CAN_H__ */
+

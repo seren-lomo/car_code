@@ -6,6 +6,8 @@
 #define MOTION_MAX_MS 120000U
 #define POLL_MS 10U
 #define SETTLE_MS 30U
+#define PREMOVE_STILL_WAIT_MS 500U
+#define PREMOVE_STILL_POLL_MS 20U
 
 volatile ArmMotorConfig_t arm_motor_config[ARM_AXIS_COUNT] = {
     {0U,0,0,10U,50U,100U}, {0U,0,0,10U,50U,100U}, {0U,0,0,10U,50U,100U}
@@ -320,8 +322,20 @@ static void advance(uint8_t i)
         if(query(i,0x36U)) p->stage=3U;
     } else if(p->stage==3U && p->reply) {
         if(query(i,0x35U)) p->stage=4U;
-    } else if(p->stage==4U && p->reply) {
-        if(magnitude(arm_motor_status[i].speed_rpm)>1) { fail(i,ARM_MOTOR_FLAGS); return; }
+    } else if(p->stage==4U) {
+        const int16_t stopped_rpm=p->operation==1U ? 2 : 5;
+        if(!p->reply || magnitude(arm_motor_status[i].speed_rpm)>stopped_rpm) {
+            if((uint32_t)(now-p->started)>=PREMOVE_STILL_WAIT_MS) {
+                fail(i,ARM_MOTOR_FLAGS); return;
+            }
+            if(p->reply) {
+                /* Consume the unstable sample before waiting for the next poll. */
+                p->reply=0U; p->polled=now;
+            } else if((uint32_t)(now-p->polled)>=PREMOVE_STILL_POLL_MS && query(i,0x36U)) {
+                p->stage=3U; /* Refresh position, then speed, before calculating relative pulses. */
+            }
+            return;
+        }
         if(p->operation==1U) {
             arm_motor_status[i].origin_counts=arm_motor_status[i].position_counts;
             arm_motor_status[i].position_cdeg=0;

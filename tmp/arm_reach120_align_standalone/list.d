@@ -1,0 +1,12 @@
+..\tmp\arm_reach120_align_standalone\list.o: ../Middlewares/Third_Party/FreeRTOS/Source/list.c
+..\tmp\arm_reach120_align_standalone\list.o: E:\APP\Keil\Keil5 MDK5.42\ARM\ARMCC\Bin\..\include\stdlib.h
+..\tmp\arm_reach120_align_standalone\list.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/FreeRTOS.h
+..\tmp\arm_reach120_align_standalone\list.o: E:\APP\Keil\Keil5 MDK5.42\ARM\ARMCC\Bin\..\include\stddef.h
+..\tmp\arm_reach120_align_standalone\list.o: E:\APP\Keil\Keil5 MDK5.42\ARM\ARMCC\Bin\..\include\stdint.h
+..\tmp\arm_reach120_align_standalone\list.o: ../Core/Inc/FreeRTOSConfig.h
+..\tmp\arm_reach120_align_standalone\list.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/projdefs.h
+..\tmp\arm_reach120_align_standalone\list.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/portable.h
+..\tmp\arm_reach120_align_standalone\list.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/deprecated_definitions.h
+..\tmp\arm_reach120_align_standalone\list.o: ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM3/portmacro.h
+..\tmp\arm_reach120_align_standalone\list.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/mpu_wrappers.h
+..\tmp\arm_reach120_align_standalone\list.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/list.h

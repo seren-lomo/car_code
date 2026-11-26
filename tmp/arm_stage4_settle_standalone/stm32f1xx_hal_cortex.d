@@ -1,0 +1,31 @@
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_cortex.c
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Core/Inc/stm32f1xx_hal_conf.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_rcc.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_def.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/CMSIS/Device/ST/STM32F1xx/Include/stm32f1xx.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/CMSIS/Device/ST/STM32F1xx/Include/stm32f103xe.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/CMSIS/Include/core_cm3.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: E:\APP\Keil\Keil5 MDK5.42\ARM\ARMCC\Bin\..\include\stdint.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/CMSIS/Include/cmsis_version.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/CMSIS/Include/cmsis_compiler.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/CMSIS/Include/cmsis_armcc.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/CMSIS/Device/ST/STM32F1xx/Include/system_stm32f1xx.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/Legacy/stm32_hal_legacy.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: E:\APP\Keil\Keil5 MDK5.42\ARM\ARMCC\Bin\..\include\stddef.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_rcc_ex.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_gpio.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_gpio_ex.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_exti.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_dma.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_dma_ex.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_can.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_cortex.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_flash.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_flash_ex.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_i2c.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_pwr.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_tim.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_tim_ex.h
+..\tmp\arm_stage4_settle_standalone\stm32f1xx_hal_cortex.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_uart.h

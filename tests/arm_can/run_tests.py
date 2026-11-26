@@ -67,6 +67,7 @@ def run(case):
     assert result == 0, f'case {case}: failed assertion {result}'
     print(f'case {case}: PASS')
 
-for case in range(1, 23):
+cases = range(1, 27)
+for case in cases:
     run(case)
-print('22/22 CAN motor behavior cases passed in CPU simulation; hardware not tested.')
+print(f'{len(cases)}/{len(cases)} CAN motor behavior cases passed in CPU simulation; hardware not tested.')

@@ -2,9 +2,11 @@
 CAN_HandleTypeDef hcan={0};
 volatile HAL_StatusTypeDef can_last_tx_status=HAL_OK;
 static uint32_t tick,mask,tx_count,stop_count,move_count;
+static uint32_t position_queries,last_move_pulses;
 static uint8_t response[3][8],response_n[3];
 static uint32_t response_at[3];
 static int32_t pos[3],target[3];
+static int16_t idle_speed[3];
 static uint8_t moving[3],drop_function,reject_function,stop_reject,tx_fail,stop_tx_fail;
 static uint8_t flags=1;
 uint32_t HAL_GetTick(void) {return tick;}
@@ -37,14 +39,18 @@ void can_SendCmd(volatile uint8_t *f,uint8_t n)
         if(n!=13 || f[10]!=2 || f[11]!=0)return;
         move_count++;
         pulses=((uint32_t)f[6]<<24)|((uint32_t)f[7]<<16)|((uint32_t)f[8]<<8)|f[9];
+        last_move_pulses=pulses;
         target[i]=pos[i]+(f[2]?-1:1)*(int32_t)(pulses*65536U/3200U);moving[i]=1;
     }
     if(function==0x36) {
+        position_queries++;
         v=(uint32_t)(pos[i]<0?-pos[i]:pos[i]);r[2]=(uint8_t)(pos[i]<0);
         r[3]=(uint8_t)(v>>24);r[4]=(uint8_t)(v>>16);r[5]=(uint8_t)(v>>8);r[6]=(uint8_t)v;
         r[7]=0x6B;response_n[i]=8;
     } else if(function==0x35) {
-        r[2]=(uint8_t)(target[i]<pos[i]);r[3]=0;r[4]=moving[i]?10:0;r[5]=0x6B;response_n[i]=6;
+        const int16_t speed=moving[i] ? (target[i]<pos[i] ? -10 : 10) : idle_speed[i];
+        const uint16_t rpm=(uint16_t)(speed<0 ? -speed : speed);
+        r[2]=(uint8_t)(speed<0);r[3]=(uint8_t)(rpm>>8);r[4]=(uint8_t)rpm;r[5]=0x6B;response_n[i]=6;
     } else if(function==0x3A)r[2]=flags;
     if(function==reject_function) {r[2]=0xE2;response_n[i]=4;}
     if(function==drop_function)response_n[i]=0;
@@ -170,6 +176,54 @@ int run_case(uint32_t test)
         CHECK(arm_can_diag[2].fault_code==ARM_MOTOR_TIMEOUT && arm_can_diag[2].fault_stage==1 &&
               arm_can_diag[2].fault_function==0xF3 && !move_count,222);
         CHECK(arm_can_diag[2].last_hal_status!=HAL_OK,223);
+    } else if(test==23) {
+        uint32_t queries,expected_pulses;
+        CHECK(home(ARM_YAW),230);
+        queries=position_queries;
+        idle_speed[ARM_YAW]=-8;
+        CHECK(ArmCAN_Move(ARM_YAW,9000),231);
+        step(10);
+        CHECK(ArmCAN_Busy() && !move_count && arm_motor_status[ARM_YAW].homed &&
+              position_queries==queries+1U && arm_motor_status[ARM_YAW].speed_rpm==-8,232);
+        pos[ARM_YAW]+=400;
+        idle_speed[ARM_YAW]=-5;
+        step(10);
+        CHECK(!move_count && position_queries==queries+1U,233);
+        expected_pulses=(uint32_t)(((arm_motor_status[ARM_YAW].target_counts-pos[ARM_YAW])*3200L+32768L)/65536L);
+        step(40);
+        CHECK(position_queries>queries+1U && move_count==1U && last_move_pulses==expected_pulses,234);
+        step(1800);
+        CHECK(ArmCAN_PositionWithinTolerance(ARM_YAW,9000) && ArmCAN_Busy() &&
+              arm_motor_status[ARM_YAW].speed_rpm==-5,235);
+        idle_speed[ARM_YAW]=0;
+        step(100);
+        CHECK(arm_motor_status[ARM_YAW].state==ARM_MOTOR_DONE && !stop_count,236);
+    } else if(test==24) {
+        idle_speed[ARM_REACH]=3;
+        CHECK(ArmCAN_RecordOrigin(ARM_REACH),240);
+        step(10);
+        CHECK(ArmCAN_Busy() && !arm_motor_status[ARM_REACH].homed && position_queries==1U,241);
+        pos[ARM_REACH]-=200;
+        idle_speed[ARM_REACH]=-2;
+        step(100);
+        CHECK(arm_motor_status[ARM_REACH].state==ARM_MOTOR_DONE &&
+              arm_motor_status[ARM_REACH].homed && arm_motor_status[ARM_REACH].origin_counts==pos[ARM_REACH] &&
+              position_queries==2U && !move_count && !stop_count,242);
+    } else if(test==25 || test==26) {
+        if(test==25) {
+            CHECK(home(ARM_YAW),250);
+            idle_speed[ARM_YAW]=6;
+            CHECK(ArmCAN_Move(ARM_YAW,9000),251);
+        } else {
+            idle_speed[ARM_YAW]=3;
+            CHECK(ArmCAN_RecordOrigin(ARM_YAW),251);
+        }
+        step(490);
+        CHECK(ArmCAN_Busy() && !move_count && !stop_count && position_queries>2U,252);
+        step(100);
+        CHECK(arm_motor_status[ARM_YAW].state==ARM_MOTOR_FAULT && !arm_motor_status[ARM_YAW].homed &&
+              arm_can_diag[ARM_YAW].fault_code==ARM_MOTOR_FLAGS && arm_can_diag[ARM_YAW].fault_stage==4U &&
+              arm_can_diag[ARM_YAW].fault_function==0x35U && !move_count && stop_count==1U,253);
     } else return 999;
     return 0;
 }
