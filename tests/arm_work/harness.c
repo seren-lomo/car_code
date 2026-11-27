@@ -924,6 +924,35 @@ static uint8_t close_tray_station(uint32_t id)
 #endif
     return 1U;
 }
+static int prefilled_tray_case(uint32_t test)
+{
+    const uint16_t work=test==126 ? ROUTE_WORK_PROCESSING_1 :
+        (test==127 ? ROUTE_WORK_STORAGE_1 : ROUTE_WORK_STORAGE_2);
+#if ARM_VISION_TEST_MODE
+    uint8_t slot;
+    CHECK(test_command(1,work,1,6,0,0,0,0)==ROUTE_BAD_STATE,1260);
+    CHECK(home() && !report_bytes[30],1261);
+    CHECK(open_tray_station(1,work) && !tray_pwm_writes &&
+          arm_work_status.state==ARM_WORK_WAIT_VISION,1262);
+    if(test==128) {
+        CHECK(!report_bytes[30] && tray_place_command(2,1,0,0,0)==ROUTE_BAD_STATE,1263);
+        return 0;
+    }
+    CHECK(report_bytes[30]==3U,1264);
+    for(slot=1U;slot<=3U;slot++) {
+        CHECK(tray_place_command(slot+1U,slot,-1000,600,-3200)==ROUTE_OK &&
+              until(ARM_WORK_PLACED) && report_bytes[30]==3U-slot,1265);
+        CHECK(test_command(1,work,1,6,0,0,0,0)==ROUTE_OK &&
+              arm_work_status.state==ARM_WORK_PLACED && report_bytes[30]==3U-slot,1266);
+    }
+    CHECK(tray_place_command(5,1,0,0,0)==ROUTE_BAD_STATE && placements==3U,1267);
+#else
+    CHECK(home() && open_tray_station(1,work) && !report_bytes[30],1268);
+    CHECK(test_command(1,work,1,6,0,0,0,0)==ROUTE_BAD_STATE &&
+          tray_place_command(2,1,0,0,0)==ROUTE_BAD_STATE && !report_bytes[30],1269);
+#endif
+    return 0;
+}
 static int tray_case(uint32_t test)
 {
     const uint16_t destination=test==101 ? ROUTE_WORK_STORAGE_2 : ROUTE_WORK_PROCESSING_1;
@@ -1076,6 +1105,7 @@ int run_case(uint32_t test)
         return 0;
     }
 #if ARM_TRAY_ENABLED
+    if(test>=126 && test<=128) return prefilled_tray_case(test);
     if(test>=100) return tray_case(test);
 #endif
     if(test==91 || test==92) return clearance_after_pick(test);

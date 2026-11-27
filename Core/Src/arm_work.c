@@ -717,6 +717,11 @@ RouteResult_t Route_OnAuxCommand(uint8_t type,const uint8_t *p,uint16_t length)
 #endif
         if(!origins() || (arm_work_status.state!=ARM_WORK_READY &&
            arm_work_status.state!=ARM_WORK_READY_LEAVE)) return ROUTE_BAD_STATE;
+#if ARM_TRAY_ENABLED
+        /* Standalone ring tests start with three blocks manually loaded. */
+        if(!tray_count && (work==ROUTE_WORK_PROCESSING_1 || work==ROUTE_WORK_STORAGE_1))
+            tray_count=TRAY_CAPACITY;
+#endif
         last_test_session=id;
         begin_work(id,index,work);
         remember(p);report();return ROUTE_OK;
